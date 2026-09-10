@@ -1,0 +1,6 @@
+# Dependencias sólo para trabajar los notebooks de análisis (notebooks/).
+# El pipeline en Docker NO las necesita: la imagen instala únicamente requirements.txt.
+-r requirements.txt
+
+jupyterlab==4.4.5
+ipykernel==6.30.0
