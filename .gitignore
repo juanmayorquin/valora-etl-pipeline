@@ -1,0 +1,23 @@
+# Entorno de Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Herramientas de agentes
+.atl/
+.claude/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Salidas derivadas: se regeneran corriendo el pipeline, no se versionan.
+#   data/processed/  -> lo produce src/transform.py
+#   data/raw/historico/ -> snapshots de `extract.py --snapshot`, crecen sin techo
+data/processed/
+data/raw/historico/
+
+# Archivos temporales que escribe el extract antes del os.replace atómico
+*.tmp.csv
+*.tmp.xlsx
