@@ -1,3 +1,13 @@
 playwright==1.62.0
 pandas==3.0.5
 openpyxl==3.1.5
+
+# Análisis exploratorio (notebooks/)
+numpy==2.3.3
+matplotlib==3.10.6
+scipy==1.16.2
+
+# Salida en Parquet (preserva dtypes que el CSV degrada a texto).
+# Ojo: con pyarrow instalado, pandas resuelve las regex de strings con RE2,
+# que NO soporta retroreferencias (\1). Ver PATRON_DIGITO_REPETIDO en transform.
+pyarrow==25.0.1
