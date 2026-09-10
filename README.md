@@ -226,7 +226,7 @@ El orden de las etapas no es negociable, y la razón está documentada en el có
 Calcular `precio_m2` antes del paso 2 es el error clásico: se divide un precio de venta
 que estaba en el feed de arriendo y el indicador nace roto.
 
-Al final, `transform.py` corre **22 validaciones** sobre su propia salida (unicidad de la
+Al final, `transform.py` corre **24 validaciones** sobre su propia salida (unicidad de la
 llave, rangos, conservación de filas entre stages). Si alguna falla, sale con código 1.
 
 ---
