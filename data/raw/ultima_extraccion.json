@@ -1,0 +1,55 @@
+{
+  "inicio_utc": "2026-09-10T04:25:40+00:00",
+  "fin_utc": "2026-09-10T07:35:44+00:00",
+  "barridos": [
+    {
+      "tipo": "apartaestudio",
+      "operacion": "arriendo",
+      "anuncios": 9747,
+      "segundos": 1530.7
+    },
+    {
+      "tipo": "apartamento",
+      "operacion": "arriendo",
+      "anuncios": 10276,
+      "segundos": 2351.0
+    },
+    {
+      "tipo": "casa",
+      "operacion": "arriendo",
+      "anuncios": 9960,
+      "segundos": 2299.4
+    },
+    {
+      "tipo": "apartaestudio",
+      "operacion": "venta",
+      "anuncios": 4239,
+      "segundos": 902.2
+    },
+    {
+      "tipo": "apartamento",
+      "operacion": "venta",
+      "anuncios": 9843,
+      "segundos": 2162.5
+    },
+    {
+      "tipo": "casa",
+      "operacion": "venta",
+      "anuncios": 10138,
+      "segundos": 2157.6
+    }
+  ],
+  "fallidos": [],
+  "archivos": [
+    {
+      "operacion": "arriendo",
+      "ruta": "data/raw\\anuncios_arriendo.csv",
+      "filas": 26582
+    },
+    {
+      "operacion": "venta",
+      "ruta": "data/raw\\anuncios_venta.csv",
+      "filas": 24220
+    }
+  ]
+}
