@@ -4,3 +4,11 @@
 
 jupyterlab==4.4.5
 ipykernel==6.30.0
+
+# EDA de modelado (notebooks/eda.ipynb): baselines y R² out-of-fold.
+seaborn==0.13.2
+scikit-learn==1.7.2
+
+# El enriquecimiento geoespacial NO necesita osmnx/geopandas: contar POIs en un
+# radio se resuelve con una query Overpass (urllib de la stdlib) + cKDTree de scipy.
+# osmnx arrastra GDAL/shapely/pyproj y sólo se justifica para análisis de red vial.

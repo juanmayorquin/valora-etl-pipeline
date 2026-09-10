@@ -15,8 +15,10 @@ venv/
 # Salidas derivadas: se regeneran corriendo el pipeline, no se versionan.
 #   data/processed/  -> lo produce src/transform.py
 #   data/raw/historico/ -> snapshots de `extract.py --snapshot`, crecen sin techo
+#   data/external/   -> caché de respuestas de OpenStreetMap (notebooks/eda.ipynb)
 data/processed/
 data/raw/historico/
+data/external/
 
 # Archivos temporales que escribe el extract antes del os.replace atómico
 *.tmp.csv
