@@ -1,0 +1,34 @@
+# Dos cosas que un clon limpio tiene que poder hacer: pasar los tests y construir la
+# imagen del pipeline. Si esto está en verde, el proyecto arranca en cualquier máquina.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+
+  imagen:
+    name: docker build (target pipeline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+      - run: docker build --target pipeline -t valora-etl:pipeline .
+      - name: las etapas arrancan dentro de la imagen
+        run: |
+          for etapa in detail transform enrich load train predict; do
+            docker run --rm valora-etl:pipeline python src/$etapa.py --help > /dev/null
+          done
