@@ -41,14 +41,24 @@ services:
     <<: *etl
     command: python src/transform.py
 
-  # Pipeline completo (extract -> transform) en una sola invocación:
+  # Etapa 3 - Enrich:  docker compose run --rm enrich
+  # Agrega el contexto del barrio (coordenadas, estrato, POIs) al stage limpio.
+  # La primera corrida tarda: son cientos de requests a OpenStreetMap y ArcGIS. Todas
+  # las respuestas quedan cacheadas en data/external/, así que la segunda es instantánea
+  # y una corrida interrumpida retoma donde quedó.
+  enrich:
+    <<: *etl
+    command: python src/enrich.py
+
+  # Pipeline completo (extract -> transform -> enrich) en una sola invocación:
   #   docker compose run --rm pipeline
-  # El `&&` importa: si el extract falla no tiene sentido transformar datos viejos.
+  # El `&&` importa: si el extract falla no tiene sentido transformar datos viejos, y si
+  # el transform falla no hay stage limpio que enriquecer.
   pipeline:
     <<: *etl
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - python src/extract.py --snapshot && python src/transform.py
+      - python src/extract.py --snapshot && python src/transform.py && python src/enrich.py
 
   # Ejecución periódica del pipeline completo, con intervalo configurable:
   #   docker compose --profile periodico up -d pipeline-periodico
@@ -67,7 +77,11 @@ services:
         while true; do
           echo "[$$(date -u +%Y-%m-%dT%H:%M:%SZ)] iniciando pipeline"
           if python src/extract.py --snapshot; then
-            python src/transform.py || echo "transformacion fallida (exit $$?)"
+            if python src/transform.py; then
+              python src/enrich.py || echo "enriquecimiento fallido (exit $$?)"
+            else
+              echo "transformacion fallida (exit $$?), se omite el enriquecimiento"
+            fi
           else
             echo "extraccion fallida (exit $$?), se omite la transformacion"
           fi

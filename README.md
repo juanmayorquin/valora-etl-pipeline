@@ -69,9 +69,10 @@ quedan en tu disco, no dentro del contenedor.
 
 | Servicio | Comando | Qué hace | Cuánto tarda |
 |---|---|---|---|
-| `pipeline` | `docker compose run --rm pipeline` | Extract + transform encadenados | 3–4 h |
+| `pipeline` | `docker compose run --rm pipeline` | Extract + transform + enrich encadenados | 3–4 h |
 | `scraper` | `docker compose run --rm scraper` | Sólo etapa 1: scrapea a `data/raw/` | 3–4 h |
 | `transform` | `docker compose run --rm transform` | Sólo etapa 2: `data/raw/` → `data/processed/` | segundos |
+| `enrich` | `docker compose run --rm enrich` | Sólo etapa 3: agrega el contexto del barrio | 1–2 h la 1.ª vez, segundos después |
 | `db` | `docker compose up -d db` | Postgres 16, para la futura etapa de carga | — |
 | `pipeline-periodico` | ver abajo | El pipeline en bucle, cada N horas | permanente |
 
@@ -85,6 +86,24 @@ docker compose --profile periodico down     # detener
 
 El intervalo se cambia con `INTERVALO_HORAS` en `docker-compose.yml` (por defecto 24).
 Si el extract falla, el transform **no** corre: no tiene sentido reprocesar datos viejos.
+Y si el transform falla, tampoco corre el enrich: no hay stage limpio que enriquecer.
+
+### El enriquecimiento y su caché
+
+La etapa 3 le pega a cuatro servicios públicos (OpenStreetMap, Nominatim, el servicio de
+estrato de Esri Colombia y el de delitos de la SCJ de Bogotá). La **primera** corrida tarda
+una o dos horas; las siguientes son de segundos, porque **cada respuesta queda cacheada en
+`data/external/`**.
+
+Ese caché es lo que hace la etapa reanudable: si la corrida se corta a mitad —o Overpass
+devuelve 504, que pasa seguido—, volver a lanzarla **retoma donde quedó** en vez de
+re-descargar todo. Borrar `data/external/` es válido pero cuesta otra corrida completa.
+
+```bash
+docker compose run --rm enrich                    # 15 ciudades (85 % de los anuncios)
+docker compose run --rm enrich --ciudades 5       # más rápido, menos cobertura
+docker compose run --rm enrich --sin-pois         # omite los puntos de interés
+```
 
 ### La base de datos
 
@@ -103,10 +122,18 @@ data/
 │   ├── anuncios_venta.{csv,xlsx}
 │   ├── ultima_extraccion.json    manifiesto de la corrida
 │   └── historico/                snapshots con fecha (--snapshot), NO se versiona
-└── processed/                ← etapa 2 (transform), NO se versiona: se regenera
-    ├── anuncios.{csv,parquet}      stage limpio: lo que consume el análisis
-    ├── cuarentena.{csv,parquet}    rechazadas, con `motivo_rechazo`
-    └── transform_resumen.json      conteos de la corrida
+├── processed/                ← etapas 2 y 3, NO se versiona: se regenera
+│   ├── anuncios.{csv,parquet}          stage limpio: salida del transform
+│   ├── cuarentena.{csv,parquet}        rechazadas, con `motivo_rechazo`
+│   ├── transform_resumen.json          conteos de la corrida
+│   ├── anuncios_enriquecido.{csv,parquet}  stage limpio + contexto del barrio
+│   └── enrich_resumen.json             cobertura y salud del enriquecimiento
+└── external/                 ← caché de las APIs públicas, NO se versiona
+    ├── bbox_*.json                     bounding box por ciudad (Nominatim)
+    ├── osm_*.json                      barrios y jerarquía administrativa (Overpass)
+    ├── pois_*.json                     puntos de interés por ciudad (Overpass)
+    ├── estrato_*.json                  estrato por barrio (Esri Colombia)
+    └── crimen_bogota_*.json            delitos por localidad (SCJ Bogotá)
 ```
 
 **La cuarentena no es un descarte, es una separación.** Queda en disco, auditable, y si
@@ -209,6 +236,17 @@ si alguna validación falló (transform). Sirven para encadenar en cron o CI.
 
 ---
 
+**`src/enrich.py`**
+
+| Flag | Por defecto | Para qué |
+|---|---|---|
+| `--ciudades N` | 15 | Cuántas ciudades enriquecer, por volumen de anuncios |
+| `--radio-poi` | 1000 | Radio en metros para contar puntos de interés |
+| `--radio-estrato` | 400 | Radio del envelope de estrato. **No bajarlo a 0**: el centroide de un barrio suele caer en una calle y el servicio devuelve cero manzanas |
+| `--sin-pois` | — | Omite los puntos de interés |
+| `--sin-criminalidad` | — | Omite los delitos por localidad |
+| `--cache-dir` | `data/external` | Dónde viven las respuestas cacheadas |
+
 ## Cómo está armado el transform
 
 El orden de las etapas no es negociable, y la razón está documentada en el código:
@@ -235,7 +273,8 @@ llave, rangos, conservación de filas entre stages). Si alguna falla, sale con c
 
 - [x] Etapa 1 — Extract
 - [x] Etapa 2 — Transform
-- [ ] Etapa 3 — Load a Postgres (el servicio `db` ya está levantado y sin usar)
+- [x] Etapa 3 — Enrich (contexto geoespacial del barrio)
+- [ ] Etapa 4 — Load a un lakehouse con MinIO + ClickHouse
 - [ ] Convertir las validaciones de `transform.py` en tests con pytest
 - [ ] Decidir si las vallas de outliers se congelan contra una línea base: hoy se
       recalculan en cada corrida, así que dos corridas pueden clasificar distinto la
