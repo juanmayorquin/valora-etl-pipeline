@@ -1,0 +1,375 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "valora · arquitectura de contenedores",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1240,
+      690
+    ],
+    "views": [
+      {
+        "id": "extraccion",
+        "label": "Extracción",
+        "focus": [
+          "sitio",
+          "scraper",
+          "detail"
+        ],
+        "note": "El único contenedor con Chromium es el scraper; el detalle baja por HTTP plano."
+      },
+      {
+        "id": "lakehouse",
+        "label": "Lakehouse",
+        "focus": [
+          "load",
+          "minio",
+          "clickhouse"
+        ],
+        "note": "MinIO es la fuente de verdad; ClickHouse se reconstruye desde el lago."
+      },
+      {
+        "id": "modelo",
+        "label": "Modelo y web",
+        "focus": [
+          "train",
+          "web",
+          "usuario",
+          "jupyter"
+        ],
+        "note": "El artefacto entrenado se versiona y lo sirven la web y los notebooks."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "sitio",
+      "type": "external",
+      "label": "metrocuadrado.com",
+      "sublabel": "anuncios públicos",
+      "pos": [
+        30,
+        80
+      ],
+      "size": [
+        130,
+        62
+      ]
+    },
+    {
+      "id": "scraper",
+      "type": "backend",
+      "label": "extract",
+      "sublabel": "Playwright",
+      "tag": "imagen scraper",
+      "pos": [
+        240,
+        80
+      ],
+      "size": [
+        130,
+        62
+      ],
+      "brand": "python"
+    },
+    {
+      "id": "detail",
+      "type": "backend",
+      "label": "detail",
+      "sublabel": "HTTP · 8 hilos",
+      "tag": "imagen pipeline",
+      "pos": [
+        450,
+        80
+      ],
+      "size": [
+        130,
+        62
+      ],
+      "brand": "python"
+    },
+    {
+      "id": "transform",
+      "type": "backend",
+      "label": "transform",
+      "sublabel": "reglas R2-R14",
+      "tag": "imagen pipeline",
+      "pos": [
+        660,
+        80
+      ],
+      "size": [
+        130,
+        62
+      ],
+      "brand": "python"
+    },
+    {
+      "id": "enrich",
+      "type": "backend",
+      "label": "enrich",
+      "sublabel": "coordenada",
+      "tag": "imagen pipeline",
+      "pos": [
+        870,
+        80
+      ],
+      "size": [
+        130,
+        62
+      ],
+      "brand": "python"
+    },
+    {
+      "id": "load",
+      "type": "backend",
+      "label": "load",
+      "sublabel": "S3 y ClickHouse",
+      "tag": "imagen pipeline",
+      "pos": [
+        1080,
+        80
+      ],
+      "size": [
+        130,
+        62
+      ],
+      "brand": "python"
+    },
+    {
+      "id": "minio",
+      "type": "cloud",
+      "label": "MinIO",
+      "sublabel": "lago S3",
+      "tag": "lago",
+      "pos": [
+        1080,
+        255
+      ],
+      "size": [
+        130,
+        62
+      ]
+    },
+    {
+      "id": "clickhouse",
+      "type": "database",
+      "label": "ClickHouse",
+      "sublabel": "valora.anuncios",
+      "tag": "warehouse",
+      "pos": [
+        1080,
+        430
+      ],
+      "size": [
+        130,
+        62
+      ],
+      "brand": "clickhouse"
+    },
+    {
+      "id": "train",
+      "type": "backend",
+      "label": "train",
+      "sublabel": "6 estimadores",
+      "tag": "imagen pipeline",
+      "pos": [
+        870,
+        255
+      ],
+      "size": [
+        130,
+        62
+      ],
+      "brand": "python"
+    },
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "web",
+      "sublabel": "FastAPI",
+      "tag": ":8000",
+      "pos": [
+        870,
+        430
+      ],
+      "size": [
+        130,
+        62
+      ],
+      "brand": "fastapi"
+    },
+    {
+      "id": "jupyter",
+      "type": "frontend",
+      "label": "Jupyter Lab",
+      "sublabel": "notebooks",
+      "tag": ":8888",
+      "pos": [
+        660,
+        430
+      ],
+      "size": [
+        130,
+        62
+      ]
+    },
+    {
+      "id": "usuario",
+      "type": "external",
+      "label": "usuario",
+      "sublabel": "navegador",
+      "pos": [
+        870,
+        605
+      ],
+      "size": [
+        130,
+        62
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Docker Compose · una máquina",
+      "wraps": [
+        "scraper",
+        "detail",
+        "transform",
+        "enrich",
+        "load",
+        "minio",
+        "clickhouse",
+        "train",
+        "web",
+        "jupyter"
+      ],
+      "pad": 22
+    },
+    {
+      "kind": "security-group",
+      "label": "lakehouse",
+      "wraps": [
+        "minio",
+        "clickhouse"
+      ],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "from": "sitio",
+      "to": "scraper",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "from": "scraper",
+      "to": "detail",
+      "label": "CSV",
+      "variant": "emphasis"
+    },
+    {
+      "from": "detail",
+      "to": "transform",
+      "label": "parquet",
+      "variant": "emphasis"
+    },
+    {
+      "from": "transform",
+      "to": "enrich",
+      "label": "limpio",
+      "variant": "emphasis"
+    },
+    {
+      "from": "enrich",
+      "to": "load",
+      "label": "gold",
+      "variant": "emphasis"
+    },
+    {
+      "from": "load",
+      "to": "minio",
+      "label": "S3 put",
+      "variant": "emphasis",
+      "labelAt": [
+        1145,
+        198
+      ]
+    },
+    {
+      "from": "minio",
+      "to": "clickhouse",
+      "label": "s3()",
+      "variant": "emphasis",
+      "labelAt": [
+        1145,
+        373
+      ]
+    },
+    {
+      "from": "enrich",
+      "to": "train",
+      "label": "gold",
+      "labelAt": [
+        935,
+        198
+      ]
+    },
+    {
+      "from": "train",
+      "to": "minio",
+      "label": "artefacto",
+      "variant": "dashed"
+    },
+    {
+      "from": "train",
+      "to": "web",
+      "label": "joblib",
+      "labelAt": [
+        935,
+        373
+      ]
+    },
+    {
+      "from": "usuario",
+      "to": "web",
+      "label": "HTTP",
+      "variant": "emphasis"
+    },
+    {
+      "from": "jupyter",
+      "to": "web",
+      "label": "mismo artefacto",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "Tres targets de una imagen",
+      "items": [
+        "pipeline: detail, transform, enrich, load, train y web, sin navegador",
+        "scraper: el único que paga Chromium"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Lo que se versiona",
+      "items": [
+        "data/raw: los CSV del extract y detalle.parquet",
+        "models: el artefacto entrenado y su resumen"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Volúmenes compartidos",
+      "items": [
+        "./data y ./models montados en cada etapa",
+        "El lago y el warehouse viven en volúmenes propios"
+      ]
+    }
+  ]
+}

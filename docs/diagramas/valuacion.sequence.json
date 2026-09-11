@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "valora · una solicitud de avalúo",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1000,
+      600
+    ],
+    "column_fit": "spread",
+    "views": [
+      {
+        "id": "ficha",
+        "label": "La ficha",
+        "focus": [
+          "usuario",
+          "pagina",
+          "api"
+        ],
+        "note": "El sector se autocompleta contra el gazetteer interno del artefacto."
+      },
+      {
+        "id": "avaluo",
+        "label": "El avalúo",
+        "focus": [
+          "api",
+          "predict",
+          "artefacto"
+        ],
+        "note": "Ubicación resuelta en cascada y seis estimadores: mediana y cuantiles por operación."
+      },
+      {
+        "id": "zona",
+        "label": "La zona",
+        "focus": [
+          "api",
+          "gold",
+          "pagina",
+          "usuario"
+        ],
+        "note": "Los comparables salen del gold, no del modelo: son la evidencia al lado del número."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "usuario",
+      "type": "external",
+      "label": "Usuario",
+      "sublabel": "navegador"
+    },
+    {
+      "id": "pagina",
+      "type": "frontend",
+      "label": "Página",
+      "sublabel": "web/static"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "API",
+      "sublabel": "FastAPI"
+    },
+    {
+      "id": "predict",
+      "type": "backend",
+      "label": "predict.py",
+      "sublabel": "predict.py"
+    },
+    {
+      "id": "artefacto",
+      "type": "database",
+      "label": "Artefacto",
+      "sublabel": "modelo.joblib"
+    },
+    {
+      "id": "gold",
+      "type": "database",
+      "label": "Gold",
+      "sublabel": "anuncios"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 246,
+      "label": "Ficha"
+    },
+    {
+      "from": 252,
+      "to": 402,
+      "label": "Avalúo"
+    },
+    {
+      "from": 408,
+      "to": 520,
+      "label": "Zona y respuesta"
+    }
+  ],
+  "messages": [
+    {
+      "id": "escribe-sector",
+      "from": "usuario",
+      "to": "pagina",
+      "y": 160,
+      "label": "escribe el sector",
+      "variant": "default"
+    },
+    {
+      "id": "pide-sectores",
+      "from": "pagina",
+      "to": "api",
+      "y": 184,
+      "label": "GET /api/sectores?ciudad&q",
+      "variant": "default"
+    },
+    {
+      "id": "lee-gazetteer",
+      "from": "api",
+      "to": "artefacto",
+      "y": 208,
+      "label": "gazetteer interno",
+      "variant": "dashed"
+    },
+    {
+      "id": "sectores",
+      "from": "api",
+      "to": "pagina",
+      "y": 232,
+      "label": "sectores con n y estrato",
+      "variant": "return"
+    },
+    {
+      "id": "valuar",
+      "from": "usuario",
+      "to": "pagina",
+      "y": 260,
+      "label": "Valuar",
+      "variant": "emphasis"
+    },
+    {
+      "id": "post-valuar",
+      "from": "pagina",
+      "to": "api",
+      "y": 284,
+      "label": "POST /api/valuar",
+      "variant": "emphasis"
+    },
+    {
+      "id": "resolver",
+      "from": "api",
+      "to": "predict",
+      "y": 308,
+      "label": "resolver_ubicacion",
+      "variant": "emphasis"
+    },
+    {
+      "id": "coordenada",
+      "from": "predict",
+      "to": "artefacto",
+      "y": 336,
+      "label": "sector -> coordenada, estrato",
+      "variant": "default"
+    },
+    {
+      "id": "predecir",
+      "from": "predict",
+      "to": "artefacto",
+      "y": 364,
+      "label": "6 estimadores: p50, p10, p90 × 2",
+      "variant": "emphasis"
+    },
+    {
+      "id": "avaluo",
+      "from": "predict",
+      "to": "api",
+      "y": 390,
+      "label": "venta + arriendo con rango",
+      "variant": "return"
+    },
+    {
+      "id": "comparables",
+      "from": "api",
+      "to": "gold",
+      "label": "mismo tipo a 1,5 km, área ±35 %",
+      "y": 418,
+      "variant": "default"
+    },
+    {
+      "id": "zona",
+      "from": "gold",
+      "to": "api",
+      "y": 446,
+      "label": "mediana m², percentil, 8 anuncios",
+      "variant": "return"
+    },
+    {
+      "id": "respuesta",
+      "from": "api",
+      "to": "pagina",
+      "y": 474,
+      "label": "200 JSON: avalúo + zona",
+      "variant": "return"
+    },
+    {
+      "id": "render",
+      "from": "pagina",
+      "to": "usuario",
+      "y": 502,
+      "label": "cifras, rango, histograma, mapa",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "pagina",
+      "from": 178,
+      "to": 508,
+      "type": "frontend"
+    },
+    {
+      "participant": "api",
+      "from": 184,
+      "to": 480,
+      "type": "backend"
+    },
+    {
+      "participant": "predict",
+      "from": 308,
+      "to": 396,
+      "type": "backend"
+    },
+    {
+      "participant": "artefacto",
+      "from": 331,
+      "to": 370,
+      "type": "database"
+    },
+    {
+      "participant": "gold",
+      "from": 413,
+      "to": 452,
+      "type": "database"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Una sola llamada",
+      "items": [
+        "POST /api/valuar devuelve avalúo y zona juntos",
+        "La página no hace cálculos: sólo pinta"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "El artefacto es autocontenido",
+      "items": [
+        "Codificación de categóricas y rezago espacial viajan dentro del Pipeline",
+        "El gazetteer interno resuelve un sector escrito a mano"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Evidencia, no sólo un número",
+      "items": [
+        "Los comparables salen del gold con un índice espacial",
+        "Percentil del avalúo entre los anuncios de la zona"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,293 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "valora · flujo de los datos",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1080,
+      640
+    ],
+    "views": [
+      {
+        "id": "extraer",
+        "label": "Extraer",
+        "focus": [
+          "sitio",
+          "tarjetas",
+          "detalle"
+        ],
+        "note": "Dos pasadas contra el sitio: las tarjetas del listado y la ficha de cada anuncio."
+      },
+      {
+        "id": "limpiar",
+        "label": "Limpiar y ubicar",
+        "focus": [
+          "limpio",
+          "cuarentena",
+          "gold"
+        ],
+        "note": "La cuarentena no se descarta: queda con su motivo. El gold suma la ubicación resuelta."
+      },
+      {
+        "id": "servir",
+        "label": "Servir",
+        "focus": [
+          "minio",
+          "clickhouse",
+          "modelo",
+          "web"
+        ],
+        "note": "El lago guarda todo; el warehouse consulta; el modelo y la web consumen el gold."
+      }
+    ]
+  },
+  "stages": [
+    {
+      "label": "Fuente"
+    },
+    {
+      "label": "Crudo"
+    },
+    {
+      "label": "Procesado"
+    },
+    {
+      "label": "Lakehouse"
+    },
+    {
+      "label": "Consumo"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "sitio",
+      "type": "external",
+      "label": "metrocuadrado.com",
+      "sublabel": "listados",
+      "stage": 0,
+      "row": 1,
+      "width": 124
+    },
+    {
+      "id": "detalle",
+      "type": "database",
+      "label": "detalle.parquet",
+      "sublabel": "50.761 fichas",
+      "stage": 1,
+      "row": 2,
+      "tag": "versionado",
+      "width": 124
+    },
+    {
+      "id": "tarjetas",
+      "type": "database",
+      "label": "anuncios_*.csv",
+      "sublabel": "50.802 filas",
+      "stage": 1,
+      "row": 0,
+      "tag": "versionado",
+      "width": 124
+    },
+    {
+      "id": "limpio",
+      "type": "database",
+      "label": "anuncios.parquet",
+      "sublabel": "44.836 × 108",
+      "stage": 2,
+      "row": 1,
+      "tag": "silver",
+      "width": 124
+    },
+    {
+      "id": "gold",
+      "type": "database",
+      "label": "enriquecido.parquet",
+      "sublabel": "44.836 × 112",
+      "stage": 2,
+      "row": 2,
+      "tag": "gold",
+      "width": 124
+    },
+    {
+      "id": "cuarentena",
+      "type": "security",
+      "label": "cuarentena.parquet",
+      "sublabel": "5.925 filas",
+      "stage": 2,
+      "row": 0,
+      "tag": "silver",
+      "width": 124
+    },
+    {
+      "id": "minio",
+      "type": "cloud",
+      "label": "MinIO",
+      "sublabel": "3 capas",
+      "stage": 3,
+      "row": 1,
+      "tag": "lago",
+      "width": 124
+    },
+    {
+      "id": "clickhouse",
+      "type": "database",
+      "label": "ClickHouse",
+      "sublabel": "valora.anuncios",
+      "stage": 3,
+      "row": 0,
+      "tag": "warehouse",
+      "brand": "clickhouse",
+      "width": 124
+    },
+    {
+      "id": "modelo",
+      "type": "backend",
+      "label": "modelo.joblib",
+      "sublabel": "6 estimadores",
+      "stage": 4,
+      "row": 2,
+      "tag": "versionado",
+      "width": 124
+    },
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "web",
+      "sublabel": "avalúo",
+      "stage": 4,
+      "row": 3,
+      "brand": "fastapi",
+      "width": 124
+    }
+  ],
+  "flows": [
+    {
+      "from": "sitio",
+      "to": "detalle",
+      "label": "detail",
+      "classification": "HTTP",
+      "variant": "emphasis"
+    },
+    {
+      "from": "sitio",
+      "to": "tarjetas",
+      "label": "extract",
+      "classification": "Playwright",
+      "variant": "emphasis"
+    },
+    {
+      "from": "detalle",
+      "to": "limpio",
+      "label": "join id",
+      "classification": "ficha",
+      "variant": "emphasis"
+    },
+    {
+      "from": "tarjetas",
+      "to": "limpio",
+      "label": "pasan",
+      "classification": "R2-R14",
+      "variant": "emphasis",
+      "route": "vertical-channel",
+      "channelX": 394,
+      "labelAt": [
+        394,
+        214
+      ]
+    },
+    {
+      "from": "tarjetas",
+      "to": "cuarentena",
+      "label": "rechazadas",
+      "classification": "motivo",
+      "variant": "security",
+      "route": "straight",
+      "labelAt": [
+        434,
+        157
+      ]
+    },
+    {
+      "from": "limpio",
+      "to": "gold",
+      "label": "enrich",
+      "classification": "coordenada",
+      "variant": "emphasis",
+      "labelAt": [
+        530,
+        328
+      ]
+    },
+    {
+      "from": "gold",
+      "to": "minio",
+      "label": "load",
+      "classification": "S3",
+      "variant": "emphasis"
+    },
+    {
+      "from": "minio",
+      "to": "clickhouse",
+      "label": "s3()",
+      "classification": "idempotente",
+      "variant": "emphasis",
+      "labelAt": [
+        745,
+        214
+      ]
+    },
+    {
+      "from": "gold",
+      "to": "modelo",
+      "label": "train",
+      "classification": "GroupKFold",
+      "route": "straight"
+    },
+    {
+      "from": "modelo",
+      "to": "web",
+      "label": "predict",
+      "classification": "2 precios",
+      "labelAt": [
+        960,
+        442
+      ]
+    },
+    {
+      "from": "gold",
+      "to": "web",
+      "label": "comparables",
+      "classification": "1,5 km",
+      "variant": "dashed",
+      "route": "vertical-channel",
+      "channelX": 656
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Camino principal",
+      "items": [
+        "Tarjetas y fichas se cruzan por id: el precio numérico de la ficha manda",
+        "El transform valida su propia salida con 32 comprobaciones"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Lo que se separa, no se pierde",
+      "items": [
+        "La cuarentena conserva cada fila con su motivo de rechazo",
+        "Sube al silver del lago igual que el stage limpio"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Una partición por corrida",
+      "items": [
+        "Cada capa del lago se escribe bajo fecha=YYYY-MM-DD",
+        "ClickHouse borra la partición del día antes de insertar"
+      ]
+    }
+  ]
+}
