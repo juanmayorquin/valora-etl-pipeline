@@ -1,13 +1,14 @@
-# Dependencias sólo para trabajar los notebooks de análisis (notebooks/).
-# El pipeline en Docker NO las necesita: la imagen instala únicamente requirements.txt.
+# Dependencias para trabajar los notebooks y correr los tests. El target `notebooks` de
+# la imagen las instala; el target `pipeline` no las necesita.
 -r requirements.txt
 
 jupyterlab==4.4.5
 ipykernel==6.30.0
-
-# EDA de modelado (notebooks/eda.ipynb): baselines y R² out-of-fold.
+matplotlib==3.10.6
 seaborn==0.13.2
-scikit-learn==1.7.2
+
+# Tests (tests/): pytest sobre las funciones puras de cada etapa.
+pytest==8.4.1
 
 # El enriquecimiento geoespacial NO necesita osmnx/geopandas: contar POIs en un
 # radio se resuelve con una query Overpass (urllib de la stdlib) + cKDTree de scipy.

@@ -1,42 +1,58 @@
-# Configuración común de las etapas del ETL: misma imagen, mismo volumen de datos.
-# El ancla evita repetirla y que se desincronicen entre servicios.
+# Todo el entorno se levanta desde acá. Las variables salen de `.env` (copiá
+# `.env.example`); si no existe, valen los defaults `${VAR:-valor}` de este archivo, que
+# alcanzan para desarrollo local.
+#
+#   docker compose up -d                       # lakehouse (MinIO + ClickHouse)
+#   docker compose run --rm reprocesar         # raw versionado -> modelo, sin scrapear
+#   docker compose run --rm pipeline           # las seis etapas, scraping incluido
+#   docker compose --profile notebooks up -d   # Jupyter en localhost:8888
+
+# Configuración común de las etapas: misma imagen, mismos volúmenes.
 x-etl: &etl
-  build: .
-  image: valora-etl:latest
+  build:
+    context: .
+    target: pipeline
+  image: valora-etl:pipeline
   environment:
     HEADLESS: "true"
   volumes:
     - ./data:/app/data
+    - ./models:/app/models
 
-# Credenciales y endpoints del lakehouse. Sólo la etapa de carga los necesita, así que van
-# en un ancla aparte en vez de ensuciar el entorno de las otras tres.
-# Son credenciales de desarrollo local, obviamente: en un despliegue real salen de secretos.
+# Credenciales y endpoints del lakehouse, para las etapas que le hablan (load, train).
 x-lakehouse: &lakehouse
   MINIO_ENDPOINT: http://minio:9000
-  MINIO_ACCESS_KEY: valora
-  MINIO_SECRET_KEY: valora123
-  MINIO_BUCKET: valora
+  MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-valora}
+  MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-valora123}
+  MINIO_BUCKET: ${MINIO_BUCKET:-valora}
   CLICKHOUSE_HOST: clickhouse
   CLICKHOUSE_PORT: "8123"
-  CLICKHOUSE_USER: valora
-  CLICKHOUSE_PASSWORD: valora123
-  CLICKHOUSE_DB: valora
+  CLICKHOUSE_USER: ${CLICKHOUSE_USER:-valora}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-valora123}
+  CLICKHOUSE_DB: ${CLICKHOUSE_DB:-valora}
+
+x-necesita-lakehouse: &necesita-lakehouse
+  minio:
+    condition: service_healthy
+  clickhouse:
+    condition: service_healthy
 
 services:
-  # ─────────────────────────────── Lakehouse ───────────────────────────────
-  # MinIO es el LAGO y la fuente de verdad: guarda las tres capas en Parquet.
-  # ClickHouse es el WAREHOUSE: copia el gold a tablas MergeTree para consultar rápido.
-  # La data queda en dos lugares a propósito - el lago siempre se puede reprocesar.
+  # =============================== Lakehouse ===============================
+  # MinIO es el LAGO y la fuente de verdad: guarda las tres capas en Parquet y los
+  # artefactos del modelo. ClickHouse es el WAREHOUSE: copia el gold a una tabla
+  # MergeTree para consultar rápido. La data queda en dos lugares a propósito: el lago
+  # siempre se puede reprocesar.
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: valora
-      MINIO_ROOT_PASSWORD: valora123
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-valora}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-valora123}
     ports:
-      - "9000:9000"   # API S3
-      - "9001:9001"   # consola web
+      - "${MINIO_PORT:-9000}:9000"           # API S3
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"   # consola web
     volumes:
       - miniodata:/data
     healthcheck:
@@ -45,35 +61,35 @@ services:
       timeout: 5s
       retries: 10
 
-  # Contenedor efímero: crea el bucket y los prefijos de las tres capas, y se apaga.
-  # `--ignore-existing` lo hace idempotente, así que puede correr en cada `up`.
+  # Contenedor efímero: crea el bucket y se apaga. `--ignore-existing` lo hace
+  # idempotente, así que puede correr en cada `up`.
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
       minio:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        mc alias set local http://minio:9000 valora valora123 &&
-        mc mb --ignore-existing local/valora &&
-        echo "bucket valora listo"
+        mc alias set local http://minio:9000 "${MINIO_ROOT_USER:-valora}" "${MINIO_ROOT_PASSWORD:-valora123}" &&
+        mc mb --ignore-existing "local/${MINIO_BUCKET:-valora}" &&
+        echo "bucket ${MINIO_BUCKET:-valora} listo"
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
     restart: unless-stopped
     environment:
-      CLICKHOUSE_USER: valora
-      CLICKHOUSE_PASSWORD: valora123
-      CLICKHOUSE_DB: valora
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-valora}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-valora123}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-valora}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     ports:
-      - "8123:8123"   # HTTP, que es por donde entra src/load.py
-      - "9002:9000"   # protocolo nativo. 9000 en el host ya lo tomó MinIO.
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"     # HTTP, por donde entra src/load.py
+      - "${CLICKHOUSE_NATIVE_PORT:-9002}:9000"   # nativo. 9000 en el host es de MinIO
     volumes:
       - chdata:/var/lib/clickhouse
     # ClickHouse abre muchísimos descriptores y, sin techo, se queda con toda la RAM que
-    # encuentre. 2 GB le sobran para 45.000 filas y dejan la máquina usable.
+    # encuentre. 2 GB le sobran para 50.000 filas y dejan la máquina usable.
     mem_limit: 2g
     ulimits:
       nofile:
@@ -86,99 +102,150 @@ services:
       timeout: 5s
       retries: 12
 
-  # ─────────────────────────────── Etapas ETL ───────────────────────────────
+  # =============================== Etapas ==================================
   # Etapa 1 - Extract:  docker compose run --rm scraper
-  # Tarda horas: son seis barridos (3 tipos x 2 operaciones) contra el sitio real.
+  # Horas: son seis barridos (3 tipos x 2 operaciones) contra el sitio con Chromium.
+  # Es el único servicio que usa el target `scraper` de la imagen.
   scraper:
     <<: *etl
+    build:
+      context: .
+      target: scraper
+    image: valora-etl:scraper
     command: python src/extract.py --snapshot
 
-  # Etapa 2 - Transform:  docker compose run --rm transform
-  # Segundos, no horas: lee los CSV que dejó el extract en data/raw/ y escribe los dos
-  # stages en data/processed/. Sale con código 1 si alguna validación falla.
+  # Etapa 2 - Detail:  docker compose run --rm detail
+  # Visita el detalle de cada anuncio por HTTP plano (sin navegador) y saca el JSON
+  # embebido: coordenadas, estrato, antigüedad, administración, comodidades...
+  # ~1 hora la primera vez; reanudable, así que un corte no cuesta la corrida.
+  detail:
+    <<: *etl
+    command: python src/detail.py --hilos ${HILOS_DETALLE:-8}
+
+  # Etapa 3 - Transform:  docker compose run --rm transform
+  # Segundos: cruza raw + detalle, aplica las reglas de calidad y escribe los stages
+  # limpio y cuarentena en data/processed/. Sale con 1 si alguna validación falla.
   transform:
     <<: *etl
     command: python src/transform.py
 
-  # Etapa 3 - Enrich:  docker compose run --rm enrich
-  # Agrega el contexto del barrio (coordenadas y estrato) al stage limpio.
-  # La primera corrida tarda: son cientos de requests a OpenStreetMap y ArcGIS. Todas
-  # las respuestas quedan cacheadas en data/external/, así que la segunda es instantánea
-  # y una corrida interrumpida retoma donde quedó.
+  # Etapa 4 - Enrich:  docker compose run --rm enrich
+  # Completa la coordenada y el estrato de los anuncios que no los traen con la mediana
+  # de los otros anuncios del mismo sector, y calcula la distancia al centro. Sin red.
+  # El respaldo OpenStreetMap + Esri existe (`--con-osm`) pero está apagado: la ablación
+  # midió que aporta +0,002 de R² por 1-2 horas de descargas en cada máquina nueva.
   enrich:
     <<: *etl
     command: python src/enrich.py
 
-  # Etapa 4 - Load:  docker compose run --rm load
+  # Etapa 5 - Load:  docker compose run --rm load
   # Sube las tres capas a MinIO y puebla ClickHouse leyendo el gold desde el lago.
   # Idempotente: re-correr el mismo día sobrescribe la partición, no duplica filas.
   load:
     <<: *etl
     environment:
       <<: *lakehouse
-    depends_on:
-      minio:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
+    depends_on: *necesita-lakehouse
     command: python src/load.py
 
-  # Pipeline completo (extract -> transform -> enrich -> load) en una sola invocación:
-  #   docker compose run --rm pipeline
+  # Etapa 6 - Train:  docker compose run --rm train
+  # Entrena los modelos de arriendo y venta, los evalúa con split agrupado y deja el
+  # artefacto en models/ y en el lago. Sale con 1 si no pasa la compuerta de R².
+  train:
+    <<: *etl
+    environment:
+      <<: *lakehouse
+    depends_on: *necesita-lakehouse
+    command: python src/train.py
+
+  # Pipeline completo en una sola invocación:  docker compose run --rm pipeline
   # El `&&` importa: cada etapa consume lo que dejó la anterior, y no tiene sentido
   # seguir con datos viejos si una falla.
   pipeline:
     <<: *etl
+    build:
+      context: .
+      target: scraper
+    image: valora-etl:scraper
     environment:
       <<: *lakehouse
-    depends_on:
-      minio:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
+    depends_on: *necesita-lakehouse
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - python src/extract.py --snapshot && python src/transform.py
-        && python src/enrich.py && python src/load.py
+      - python src/extract.py --snapshot
+        && python src/detail.py --hilos ${HILOS_DETALLE:-8}
+        && python src/transform.py && python src/enrich.py
+        && python src/load.py && python src/train.py
 
-  # Ejecución periódica del pipeline completo, con intervalo configurable:
+  # El camino corto:  docker compose run --rm reprocesar
+  # Arranca desde lo que ya está versionado en data/raw/ (los CSV del extract y el
+  # detalle.parquet) y llega hasta el modelo sin tocar el sitio. Es lo que corre un clon
+  # nuevo para tener el lakehouse poblado y el sandbox andando en minutos.
+  reprocesar:
+    <<: *etl
+    environment:
+      <<: *lakehouse
+    depends_on: *necesita-lakehouse
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - python src/transform.py && python src/enrich.py
+        && python src/load.py && python src/train.py
+
+  # Ejecución periódica del pipeline completo:
   #   docker compose --profile periodico up -d pipeline-periodico
-  # Alternativa si preferís el planificador del sistema: dejar sólo el servicio
-  # `pipeline` y llamarlo desde cron o el Programador de tareas de Windows.
+  # Alternativa si preferís el planificador del sistema: llamar a `pipeline` desde cron
+  # o el Programador de tareas de Windows.
   pipeline-periodico:
     <<: *etl
+    build:
+      context: .
+      target: scraper
+    image: valora-etl:scraper
     profiles: ["periodico"]
     restart: unless-stopped
     environment:
       <<: *lakehouse
       HEADLESS: "true"
-      INTERVALO_HORAS: "24"
-    depends_on:
-      minio:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
+      INTERVALO_HORAS: ${INTERVALO_HORAS:-24}
+      HILOS_DETALLE: ${HILOS_DETALLE:-8}
+    depends_on: *necesita-lakehouse
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         while true; do
           echo "[$$(date -u +%Y-%m-%dT%H:%M:%SZ)] iniciando pipeline"
-          if python src/extract.py --snapshot; then
-            if python src/transform.py; then
-              if python src/enrich.py; then
-                python src/load.py || echo "carga fallida (exit $$?)"
-              else
-                echo "enriquecimiento fallido (exit $$?), se omite la carga"
-              fi
-            else
-              echo "transformacion fallida (exit $$?), se omite el enriquecimiento"
-            fi
-          else
-            echo "extraccion fallida (exit $$?), se omite la transformacion"
-          fi
+          python src/extract.py --snapshot \
+            && python src/detail.py --hilos "$${HILOS_DETALLE}" \
+            && python src/transform.py \
+            && python src/enrich.py \
+            && python src/load.py \
+            && python src/train.py \
+            || echo "pipeline interrumpido en una etapa (exit $$?); se reintenta en el proximo ciclo"
           echo "[$$(date -u +%Y-%m-%dT%H:%M:%SZ)] durmiendo $${INTERVALO_HORAS}h"
           sleep $$(( $${INTERVALO_HORAS} * 3600 ))
         done
+
+  # =============================== Notebooks ===============================
+  # Jupyter Lab con todo instalado:  docker compose --profile notebooks up -d
+  # Abre http://localhost:8888 (token en .env, por defecto `valora`). Los notebooks, la
+  # data y los modelos son volúmenes: lo que guardás queda en tu disco.
+  jupyter:
+    build:
+      context: .
+      target: notebooks
+    image: valora-etl:notebooks
+    profiles: ["notebooks"]
+    restart: unless-stopped
+    environment:
+      <<: *lakehouse
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN:-valora}
+    ports:
+      - "${JUPYTER_PORT:-8888}:8888"
+    volumes:
+      - ./notebooks:/app/notebooks
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./src:/app/src
 
 volumes:
   miniodata:

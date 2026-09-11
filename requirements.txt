@@ -1,10 +1,10 @@
+# Dependencias del pipeline (src/). Es lo único que instala el target `pipeline` de la
+# imagen; lo que sólo usan los notebooks vive en requirements-dev.txt.
+
 playwright==1.62.0
 pandas==3.0.5
 openpyxl==3.1.5
-
-# Análisis exploratorio (notebooks/)
 numpy==2.3.3
-matplotlib==3.10.6
 scipy==1.16.2
 
 # Salida en Parquet (preserva dtypes que el CSV degrada a texto).
@@ -16,3 +16,9 @@ pyarrow==25.0.1
 # clickhouse-connect entra por HTTP (8123), no por el protocolo nativo.
 boto3==1.35.76
 clickhouse-connect==0.8.11
+
+# Modelo (src/train.py, src/predict.py). HistGradientBoosting viene con scikit-learn:
+# sin LightGBM ni CatBoost, que agregan compilados a la imagen sin ganancia demostrada
+# a este tamaño de datos. joblib serializa el artefacto.
+scikit-learn==1.7.2
+joblib==1.5.2

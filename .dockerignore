@@ -1,8 +1,15 @@
+# Lo que NO viaja al contexto de build. data/, notebooks/ y models/ se montan como
+# volúmenes en tiempo de ejecución, así que copiarlos a la imagen sería duplicarlos.
 .git
+.github
 .atl
 .claude
-data
-notebooks
+.venv
+.env
 __pycache__
 *.pyc
-.venv
+data
+models
+notebooks
+tests
+*.md
