@@ -79,10 +79,12 @@ import joblib
 import numpy as np
 import pandas as pd
 import sklearn
+from scipy.spatial import cKDTree
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
-from sklearn.model_selection import GroupKFold, RandomizedSearchCV
+from sklearn.model_selection import GroupKFold, KFold, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 
@@ -217,9 +219,68 @@ def preparar(df, operacion):
 # 2. Modelo
 # --------------------------------------------------------------------------------------
 
-def construir(parametros, cuantil=None):
-    """Pipeline autocontenido: codificación de categóricas + boosting. Va entero al
-    artefacto, así predict.py no tiene que replicar ninguna transformación."""
+class VecinosCercanos(BaseEstimator, TransformerMixin):
+    """Rezago espacial: la mediana de log(precio/m²) de los k anuncios más cercanos.
+
+    Es lo que hace un avalúo automático real: mirar a cuánto se vende alrededor. Es la
+    única clase del repo, porque scikit-learn exige un transformador para que el cálculo
+    viaje dentro del Pipeline y el artefacto siga siendo autocontenido.
+
+    Sin fuga del target: en `fit_transform` (las filas de entrenamiento) la feature se
+    calcula con folds internos, así cada fila ve sólo vecinos de OTROS folds, igual que
+    una fila nueva en producción. En `transform` (filas nuevas) se usan todos los puntos
+    de entrenamiento. Las filas sin coordenada quedan en NaN, que el boosting maneja.
+    """
+
+    def __init__(self, k=15, folds=5):
+        self.k = k
+        self.folds = folds
+
+    def _valores(self, X, y):
+        return np.asarray(y, dtype="float64") - X["log_area"].to_numpy(dtype="float64")
+
+    def _puntos(self, X):
+        lat = X["lat"].to_numpy(dtype="float64")
+        lon = X["lon"].to_numpy(dtype="float64")
+        # Proyección plana local: 1 grado de latitud ~ 111 km; la longitud se escala
+        return np.column_stack([lat * 111.32, lon * 111.32 * np.cos(np.radians(4.6))])
+
+    def fit(self, X, y):
+        puntos, valores = self._puntos(X), self._valores(X, y)
+        validos = ~np.isnan(puntos).any(axis=1) & ~np.isnan(valores)
+        self.puntos_ = puntos[validos]
+        self.valores_ = valores[validos]
+        self.arbol_ = cKDTree(self.puntos_)
+        return self
+
+    def _consultar(self, arbol, valores, puntos):
+        salida = np.full(len(puntos), np.nan)
+        validos = ~np.isnan(puntos).any(axis=1)
+        if validos.any() and len(valores):
+            k = min(self.k, len(valores))
+            _, indices = arbol.query(puntos[validos], k=k)
+            indices = np.atleast_2d(indices) if k > 1 else indices.reshape(-1, 1)
+            salida[validos] = np.median(valores[indices], axis=1)
+        return salida
+
+    def fit_transform(self, X, y):
+        self.fit(X, y)
+        puntos, valores = self._puntos(X), self._valores(X, y)
+        rezago = np.full(len(X), np.nan)
+        validos = np.where(~np.isnan(puntos).any(axis=1) & ~np.isnan(valores))[0]
+        for train, test in KFold(self.folds, shuffle=True, random_state=0).split(validos):
+            arbol = cKDTree(puntos[validos[train]])
+            rezago[validos[test]] = self._consultar(arbol, valores[validos[train]],
+                                                    puntos[validos[test]])
+        return X.assign(vecinos_log_m2=rezago)
+
+    def transform(self, X):
+        return X.assign(vecinos_log_m2=self._consultar(self.arbol_, self.valores_, self._puntos(X)))
+
+
+def construir(parametros, cuantil=None, vecinos_k=None):
+    """Pipeline autocontenido: (rezago espacial) + codificación de categóricas + boosting.
+    Va entero al artefacto, así predict.py no tiene que replicar ninguna transformación."""
     codificador = ColumnTransformer(
         [("categoricas", OrdinalEncoder(
             handle_unknown="use_encoded_value", unknown_value=-1,
@@ -230,7 +291,10 @@ def construir(parametros, cuantil=None):
     modelo = HistGradientBoostingRegressor(
         categorical_features=list(range(len(CATEGORICAS))), random_state=0,
         early_stopping=False, **parametros, **extra)
-    return Pipeline([("codificador", codificador), ("modelo", modelo)])
+    pasos = [("codificador", codificador), ("modelo", modelo)]
+    if vecinos_k:
+        pasos.insert(0, ("vecinos", VecinosCercanos(k=vecinos_k)))
+    return Pipeline(pasos)
 
 
 def buscar_parametros(X, y, grupos, n_iter, semilla=0):

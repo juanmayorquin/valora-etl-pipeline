@@ -1,0 +1,45 @@
+experimento,operacion,regimen,n,R2,MAE_log,MAPE_%,MdAPE_%,dentro_10_%,dentro_20_%,segundos
+E0 HGB actual,arriendo,conocido,22386,0.9106,0.1804,18.3,13.49,38.35,66.44,14.8
+E0 HGB actual,arriendo,frio,22386,0.9021,0.1907,19.24,14.67,36.25,63.27,12.7
+E0 HGB actual,venta,conocido,22859,0.928,0.1709,17.36,12.82,40.45,68.63,12.9
+E0 HGB actual,venta,frio,22859,0.9224,0.1783,18.07,13.41,39.13,66.72,12.9
+E1 target log(precio/m²),arriendo,conocido,22386,0.9105,0.1808,18.33,13.51,38.3,66.08,12.5
+E1 target log(precio/m²),arriendo,frio,22386,0.9031,0.1896,19.18,14.5,36.51,63.45,12.8
+E1 target log(precio/m²),venta,conocido,22859,0.9292,0.1694,17.19,12.64,41.01,68.75,13.1
+E1 target log(precio/m²),venta,frio,22859,0.9232,0.1774,18.02,13.37,39.14,66.64,13.1
+E2a HGB + vecinos k=10,arriendo,conocido,22386,0.9096,0.1815,18.38,13.7,38.54,65.93,12.9
+E2a HGB + vecinos k=10,arriendo,frio,22386,0.9022,0.1902,19.2,14.44,36.32,63.77,13.0
+E2a HGB + vecinos k=10,venta,conocido,22859,0.9286,0.1699,17.25,12.59,41.24,68.69,13.5
+E2a HGB + vecinos k=10,venta,frio,22859,0.9224,0.178,18.04,13.34,39.11,66.77,14.8
+E2b HGB + vecinos k=25,arriendo,conocido,22386,0.9104,0.1806,18.3,13.57,38.86,65.9,12.1
+E2b HGB + vecinos k=25,arriendo,frio,22386,0.9024,0.1903,19.22,14.56,36.25,63.48,12.5
+E2b HGB + vecinos k=25,venta,conocido,22859,0.9285,0.1708,17.33,12.89,40.41,68.5,14.2
+E2b HGB + vecinos k=25,venta,frio,22859,0.9221,0.1786,18.06,13.37,38.94,66.58,14.2
+E3 LightGBM,arriendo,conocido,22386,0.9112,0.1799,18.24,13.52,38.77,66.23,5.5
+E3 LightGBM,arriendo,frio,22386,0.9043,0.1882,18.98,14.24,36.92,63.9,8.5
+E3 LightGBM,venta,conocido,22859,0.9279,0.1715,17.38,12.92,40.33,68.45,7.3
+E3 LightGBM,venta,frio,22859,0.9223,0.1788,18.11,13.49,38.59,66.36,6.2
+E4 CatBoost,arriendo,conocido,22386,0.9125,0.1792,18.12,13.56,38.68,66.43,421.0
+E4 CatBoost,arriendo,frio,22386,0.9053,0.1878,18.91,14.37,36.71,64.06,346.1
+E4 CatBoost,venta,conocido,22859,0.93,0.1698,17.22,12.92,40.54,68.54,334.7
+E4 CatBoost,venta,frio,22859,0.9248,0.1767,17.88,13.4,38.63,66.99,337.7
+E5 ExtraTrees,arriendo,conocido,22386,0.8853,0.2064,21.07,15.64,34.25,59.86,11.3
+E5 ExtraTrees,arriendo,frio,22386,0.8745,0.2186,22.27,16.93,31.81,56.85,11.0
+E5 ExtraTrees,venta,conocido,22859,0.8979,0.2066,21.05,15.79,34.12,59.76,12.0
+E5 ExtraTrees,venta,frio,22859,0.8917,0.2148,21.92,16.61,32.1,57.64,11.8
+E6 Ridge + splines,arriendo,conocido,22386,0.8775,0.2166,22.1,16.93,31.49,56.84,1.7
+E6 Ridge + splines,arriendo,frio,22386,0.8735,0.2198,22.49,17.01,31.22,56.5,1.7
+E6 Ridge + splines,venta,conocido,22859,0.8996,0.208,21.2,16.29,32.7,58.82,1.7
+E6 Ridge + splines,venta,frio,22859,0.8955,0.2118,21.71,16.6,32.23,58.2,1.6
+E7 modelo conjunto,arriendo,conocido,22386,0.912,0.1805,18.29,13.79,38.12,65.63,0.0
+E7 modelo conjunto,venta,conocido,22859,0.928,0.1714,17.38,12.95,40.19,68.43,0.0
+E7 modelo conjunto,arriendo,frio,22386,0.9047,0.1885,19.07,14.47,36.09,63.59,0.0
+E7 modelo conjunto,venta,frio,22859,0.9217,0.1796,18.22,13.66,38.46,66.25,0.0
+E8 mezcla (E4 + E3),arriendo,conocido,22386,0.9138,0.1774,17.95,13.3,39.08,66.78,0.0
+E8 mezcla (E4 + E3),arriendo,frio,22386,0.907,0.1857,18.69,14.17,37.38,64.42,0.0
+E8 mezcla (E4 + E3),venta,conocido,22859,0.9309,0.1682,17.04,12.74,41.05,69.1,0.0
+E8 mezcla (E4 + E3),venta,frio,22859,0.9256,0.1752,17.72,13.3,39.43,67.5,0.0
+E9 CatBoost + búsqueda,arriendo,conocido,22386,0.9123,0.1788,18.08,13.43,38.96,66.26,0.0
+E9 CatBoost + búsqueda,arriendo,frio,22386,0.9046,0.1881,18.96,14.31,36.84,63.9,0.0
+E9 CatBoost + búsqueda,venta,conocido,22859,0.93,0.1692,17.18,12.76,40.75,68.69,0.0
+E9 CatBoost + búsqueda,venta,frio,22859,0.9249,0.1763,17.86,13.44,38.94,67.18,0.0

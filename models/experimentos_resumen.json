@@ -1,0 +1,33 @@
+{
+  "mejor": "E8 mezcla (E4 + E3)",
+  "delta_r2_frio": 0.0041,
+  "umbral": 0.005,
+  "entra": false,
+  "parametros_e9": {
+    "arriendo": {
+      "learning_rate": 0.08,
+      "l2_leaf_reg": 1,
+      "depth": 8
+    },
+    "venta": {
+      "learning_rate": 0.08,
+      "l2_leaf_reg": 1,
+      "depth": 8
+    }
+  },
+  "usa_vecinos": false,
+  "k_vecinos": null,
+  "tabla_r2": {
+    "E0 HGB actual": 0.9122,
+    "E1 target log(precio/m²)": 0.9132,
+    "E2a HGB + vecinos k=10": 0.9123,
+    "E2b HGB + vecinos k=25": 0.9122,
+    "E3 LightGBM": 0.9133,
+    "E4 CatBoost": 0.915,
+    "E5 ExtraTrees": 0.8831,
+    "E6 Ridge + splines": 0.8845,
+    "E7 modelo conjunto": 0.9132,
+    "E8 mezcla (E4 + E3)": 0.9163,
+    "E9 CatBoost + búsqueda": 0.9148
+  }
+}

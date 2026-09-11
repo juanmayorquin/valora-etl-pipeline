@@ -25,3 +25,6 @@ models/predicciones_oof.parquet
 # Archivos temporales que escribe el extract antes del os.replace atómico
 *.tmp.csv
 *.tmp.xlsx
+
+# CatBoost escribe logs de entrenamiento en el cwd
+catboost_info/
