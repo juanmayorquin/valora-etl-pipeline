@@ -1,7 +1,7 @@
-"""Transformación de los anuncios crudos - segunda etapa (Transform) del flujo ETL.
+"""Transformación de los anuncios crudos - tercera etapa (Transform) del flujo ETL.
 
-Lee los CSV que dejó `extract.py` en `data/raw/` y produce dos stages en
-`data/processed/`:
+Lee los CSV que dejó `extract.py` y el `detalle.parquet` que dejó `detail.py`, ambos en
+`data/raw/`, y produce dos stages en `data/processed/`:
 
     anuncios.{csv,parquet}     stage limpio: lo que consume el análisis
     cuarentena.{csv,parquet}   rechazadas, cada una con su `motivo_rechazo`
@@ -11,26 +11,33 @@ La cuarentena no es un descarte sino una separación: queda en disco, auditable,
 una regla resulta demasiado estricta se reprocesa desde ahí.
 
 Las reglas (R2-R12 de parseo, D0-D7 de distribución) salieron del análisis exploratorio
-en `notebooks/eda.ipynb`; el flujo se prototipó en `notebooks/transform.ipynb`.
+en `notebooks/01_eda_datos_crudos.ipynb`; el flujo se prototipó en
+`notebooks/02_transform_prototipo.ipynb`. R13 y R14 llegaron con el detalle.
 
 El orden de aplicación importa y no es negociable:
 
     1. Normalizar esquema      ->  un solo contrato de columnas + tipo desde el slug (R3)
-    2. Operación y duales      ->  R4 + D0: separa precio_venta / precio_arriendo
-    3. Saneamiento de precio   ->  R5, R6
-    4. Saneamiento de área     ->  R7 + D4 (area_posible_lote)
-    5. Derivar precio_m2       ->  sólo sobre lo que sobrevivió a 3 y 4
-    6. Outliers IQR log        ->  D1, D2, D3
-    7. Consolidar y separar    ->  R11 + compuerta de calidad
+    2. Unir el detalle         ->  estrato, coordenada, antigüedad, administración... por id
+    3. Operación y duales      ->  R4 + D0: separa precio_venta / precio_arriendo. El
+                                   número del detalle manda sobre el texto de la tarjeta
+    4. Saneamiento de precio   ->  R5, R6
+    5. Saneamiento de área     ->  R7 + D4 (area_posible_lote)
+    6. Saneamiento del detalle ->  R13: estrato 1-6, coordenada en Colombia, área privada,
+                                   piso y administración plausibles
+    7. Comodidades             ->  R14: una bandera por comodidad frecuente
+    8. Derivar precio_m2       ->  sólo sobre lo que sobrevivió a 4 y 5
+    9. Outliers IQR log        ->  D1, D2, D3
+   10. Consolidar y separar    ->  R11 + near-duplicados + compuerta de calidad
 
-Calcular `precio_m2` antes del paso 2 es el error clásico: se divide un precio de venta
+Calcular `precio_m2` antes del paso 3 es el error clásico: se divide un precio de venta
 que estaba en el feed de arriendo y el indicador nace roto.
 
 Uso:
     python src/transform.py
     python src/transform.py --entrada-dir data/raw --salida-dir data/processed
     python src/transform.py --operaciones arriendo
-    python src/transform.py --sin-validar      # no falla aunque las validaciones fallen
+    python src/transform.py --sin-detalle       # sólo con la tarjeta, sin detalle.parquet
+    python src/transform.py --sin-validar       # no falla aunque las validaciones fallen
 
 Códigos de salida:
     0  la transformación terminó y todas las validaciones pasaron
@@ -180,6 +187,54 @@ def cargar_crudo(entrada_dir, operaciones, prefijo="anuncios"):
     return pd.concat(partes, ignore_index=True)
 
 
+# --------------------------------------------------------------------------------------
+# 1b. El detalle de cada anuncio - lo que dejó detail.py
+# --------------------------------------------------------------------------------------
+
+# Columnas del detalle que entran al contrato tal cual.
+COLUMNAS_DETALLE = [
+    "estrato", "antiguedad", "estado_inmueble", "es_proyecto", "administracion",
+    "area_privada", "lat", "lon", "ubicacion_aproximada", "barrio", "zona", "piso",
+    "comodidades", "n_fotos", "tiene_video", "descripcion", "inmobiliaria_id", "destacado",
+]
+# Columnas del detalle que se RECONCILIAN con la tarjeta (precio, conteos) y después se
+# descartan: en el stage queda una sola versión de cada dato, no dos.
+COLUMNAS_DETALLE_RECONCILIADAS = [
+    "precio_venta_detalle", "precio_arriendo_detalle",
+    "habitaciones_detalle", "banos_detalle", "parqueaderos_detalle",
+]
+
+
+def cargar_detalle(ruta):
+    """Lee detalle.parquet y se queda con los anuncios que trajeron datos."""
+    detalle = pd.read_parquet(ruta)
+    con_datos = detalle[detalle["estado"].eq("ok")]
+    if con_datos["id_inmueble"].duplicated().any():
+        raise ValueError(f"{ruta}: hay id_inmueble repetidos en el detalle")
+    log.info("  %-28s %s anuncios con detalle de %s resueltos %s", ruta.name,
+             f"{len(con_datos):,}", f"{len(detalle):,}",
+             detalle["estado"].value_counts().to_dict())
+    return con_datos[["id_inmueble"] + COLUMNAS_DETALLE + COLUMNAS_DETALLE_RECONCILIADAS]
+
+
+def unir_detalle(crudo, detalle):
+    """Left join por id: ninguna fila se pierde ni se duplica. Un anuncio sin detalle
+    (bajado del sitio entre el extract y el detail) sigue con lo que trajo la tarjeta,
+    con las columnas nuevas en nulo y `con_detalle = False`."""
+    if detalle is None:
+        for columna in COLUMNAS_DETALLE + COLUMNAS_DETALLE_RECONCILIADAS:
+            crudo[columna] = pd.NA
+        crudo["con_detalle"] = False
+        return crudo
+    antes = len(crudo)
+    unido = crudo.merge(detalle, on="id_inmueble", how="left", validate="many_to_one")
+    unido["con_detalle"] = unido["id_inmueble"].isin(detalle["id_inmueble"]).astype(bool)
+    if len(unido) != antes:
+        raise ValueError(f"El join con el detalle cambió el número de filas: {antes} -> {len(unido)}")
+    log.info("Detalle unido: %.2f %% de las filas lo tienen", unido["con_detalle"].mean() * 100)
+    return unido
+
+
 def resolver_tipo(df):
     """R3 - manda el slug. Marca lo que no es vivienda para que la compuerta lo saque.
 
@@ -233,13 +288,32 @@ def separar_precios(df):
 
     Los duales publican el precio de venta también en el feed de arriendo, con una
     mediana cientos de veces mayor que la de un canon real. Por eso el precio no puede
-    quedar en una sola columna, y para un dual el canon queda en NaN: no lo conocemos.
-    """
-    precio = a_entero(df["precio_texto"])
+    quedar en una sola columna.
 
+    El detalle trae los dos precios como número y manda sobre el texto de la tarjeta.
+    Para un dual, el canon que antes quedaba en NaN ("no lo conocemos") ahora se conoce.
+    `precio_discrepante` marca las filas donde tarjeta y detalle difieren más de 1 %: es
+    información sobre la fuente, no un motivo de rechazo.
+    """
+    tarjeta = a_entero(df["precio_texto"])
     es_venta = df["operacion_feed"].eq("venta")
-    df["precio_venta"] = precio.where(es_venta | df["es_dual"])
-    df["precio_arriendo"] = precio.where(~es_venta & ~df["es_dual"])
+    venta_tarjeta = tarjeta.where(es_venta | df["es_dual"])
+    arriendo_tarjeta = tarjeta.where(~es_venta & ~df["es_dual"])
+
+    venta_detalle = pd.to_numeric(df["precio_venta_detalle"], errors="coerce").astype("Int64")
+    arriendo_detalle = pd.to_numeric(df["precio_arriendo_detalle"], errors="coerce").astype("Int64")
+    df["precio_venta"] = venta_detalle.fillna(venta_tarjeta)
+    df["precio_arriendo"] = arriendo_detalle.fillna(arriendo_tarjeta)
+    df["precio_desde_detalle"] = (venta_detalle.notna() | arriendo_detalle.notna()).astype(bool)
+
+    # Lo que muestra la tarjeta, comparado con el mismo precio en el detalle
+    detalle = venta_detalle.where(es_venta | df["es_dual"], arriendo_detalle)
+    diferencia = (tarjeta.astype("Float64") - detalle.astype("Float64")).abs()
+    df["precio_discrepante"] = (
+        (diferencia > detalle.astype("Float64") * 0.01).fillna(False).astype(bool))
+    log.info("D0 - precio desde el detalle: %s filas | discrepa con la tarjeta: %s",
+             f"{int(df['precio_desde_detalle'].sum()):,}",
+             f"{int(df['precio_discrepante'].sum()):,}")
     return df
 
 
@@ -266,8 +340,14 @@ def es_relleno(serie_texto):
 
 
 def sanear_precios(df):
-    """R6 antes que R5: si no, el rango da por bueno un relleno que cae dentro."""
-    df["precio_relleno"] = es_relleno(df["precio_texto"])
+    """R6 antes que R5: si no, el rango da por bueno un relleno que cae dentro.
+
+    El relleno se busca sobre el precio ya elegido (detalle o tarjeta), no sobre el texto
+    de la tarjeta: un anuncio con "$1.111.111" en la tarjeta y un número real en el
+    detalle se rescata en vez de irse a cuarentena.
+    """
+    df["precio_relleno"] = (es_relleno(df["precio_venta"].astype("string").fillna(""))
+                            | es_relleno(df["precio_arriendo"].astype("string").fillna("")))
     log.info("R6 - precios de relleno: %d", int(df["precio_relleno"].sum()))
     df.loc[df["precio_relleno"], ["precio_venta", "precio_arriendo"]] = pd.NA
 
@@ -303,8 +383,88 @@ def sanear_areas(df):
 
 
 def precio_unificado(df):
-    """El precio que corresponde a la operación de la fila."""
-    return df["precio_arriendo"].astype("Float64").fillna(df["precio_venta"].astype("Float64"))
+    """El precio que corresponde a la operación de la fila. Un dual ('ambas') se mide por
+    su precio de venta: es el que tiene siempre y el que publica en los dos feeds. Su
+    canon, cuando el detalle lo trae, queda en `precio_arriendo` para el modelo."""
+    arriendo = df["precio_arriendo"].astype("Float64")
+    venta = df["precio_venta"].astype("Float64")
+    return arriendo.where(df["operacion"].eq("arriendo"), venta)
+
+
+# --------------------------------------------------------------------------------------
+# 4b. Saneamiento de las columnas del detalle - R13
+# --------------------------------------------------------------------------------------
+
+# Colombia entera, islas incluidas. Una coordenada fuera de acá es un error de carga del
+# anunciante (lat/lon invertidas, 0/0, otro país), no un inmueble.
+BBOX_COLOMBIA = {"lat": (-4.3, 13.6), "lon": (-82.0, -66.8)}
+RANGO_ESTRATO = (1, 6)
+RANGO_PISO = (1, 60)
+# El área privada puede ser igual a la construida (el sitio a veces repite el valor) pero
+# no mayor: si lo es, alguien cargó los campos al revés.
+TOLERANCIA_AREA_PRIVADA = 1.05
+
+# Del texto del sitio a un ordinal. "Remodelado" no es una edad: queda sin ordinal y
+# conserva el texto.
+ANTIGUEDAD_ORDINAL = {
+    "Menos de 1 año": 0,
+    "Entre 0 y 5 años": 1,
+    "Entre 5 y 10 años": 2,
+    "Entre 10 y 20 años": 3,
+    "Más de 20 años": 4,
+}
+
+
+def sanear_detalle(df):
+    """Reglas informativas: anulan el valor imposible y lo marcan, la fila sigue. Un
+    estrato 7 no existe en Colombia, pero el anuncio sigue siendo un inmueble válido."""
+    # Se acota ANTES de castear: `astype("Int8")` revienta con un solo valor fuera de
+    # rango, y un estrato "200" mal cargado no puede tirar abajo la transformación.
+    estrato = pd.to_numeric(df["estrato"], errors="coerce").astype("float64")
+    fuera = (estrato.notna() & ~estrato.between(*RANGO_ESTRATO)).astype(bool)
+    df["estrato_invalido"] = fuera
+    df["estrato"] = estrato.where(~fuera).astype("Int8")
+
+    lat = pd.to_numeric(df["lat"], errors="coerce").astype("Float64")
+    lon = pd.to_numeric(df["lon"], errors="coerce").astype("Float64")
+    dentro = lat.between(*BBOX_COLOMBIA["lat"]) & lon.between(*BBOX_COLOMBIA["lon"])
+    fuera = ((lat.notna() | lon.notna()) & ~dentro).fillna(False).astype(bool)
+    df["coordenada_invalida"] = fuera
+    df["lat"] = lat.where(~fuera)
+    df["lon"] = lon.where(~fuera)
+
+    privada = pd.to_numeric(df["area_privada"], errors="coerce").astype("Float64")
+    fuera = (privada.notna()
+             & (privada > df["area_m2"] * TOLERANCIA_AREA_PRIVADA)).fillna(False).astype(bool)
+    df["area_privada_invalida"] = fuera
+    df["area_privada"] = privada.where(~fuera)
+
+    piso = pd.to_numeric(df["piso"], errors="coerce").astype("float64")
+    df["piso"] = piso.where(piso.between(*RANGO_PISO)).astype("Int16")
+
+    # Una administración mayor que el canon es un error de carga (o el total mensual
+    # puesto en el campo equivocado). En venta no hay contra qué compararla.
+    admin = pd.to_numeric(df["administracion"], errors="coerce").astype("Int64")
+    fuera = (admin.notna() & df["precio_arriendo"].notna()
+             & (admin > df["precio_arriendo"])).fillna(False).astype(bool)
+    df["administracion_invalida"] = fuera
+    df["administracion"] = admin.where(~fuera)
+
+    df["antiguedad_ordinal"] = df["antiguedad"].map(ANTIGUEDAD_ORDINAL).astype("Int8")
+    df["es_nuevo"] = df["estado_inmueble"].eq("Nuevo").fillna(False).astype(bool)
+    for columna in ("es_proyecto", "tiene_video", "destacado"):
+        df[columna] = df[columna].fillna(False).astype(bool)
+    df["ubicacion_aproximada"] = df["ubicacion_aproximada"].astype("boolean")
+    n_fotos = pd.to_numeric(df["n_fotos"], errors="coerce").astype("float64")
+    df["n_fotos"] = n_fotos.where(n_fotos.between(0, 32_767)).astype("Int16")
+
+    for columna in ("estrato_invalido", "coordenada_invalida", "area_privada_invalida",
+                    "administracion_invalida"):
+        log.info("R13 - %-24s anulados: %d", columna, int(df[columna].sum()))
+    log.info("R13 - con estrato: %s | con coordenada: %s | con antigüedad: %s",
+             f"{int(df['estrato'].notna().sum()):,}", f"{int(df['lat'].notna().sum()):,}",
+             f"{int(df['antiguedad_ordinal'].notna().sum()):,}")
+    return df
 
 
 def marcar_area_posible_lote(df):
@@ -358,7 +518,13 @@ TOPES = {"habitaciones": 5, "banos": 5, "parqueaderos": 4}
 
 def marcar_censuradas(df):
     for columna, tope in TOPES.items():
-        valores = pd.to_numeric(df[columna], errors="coerce").astype("Int8")
+        tarjeta = pd.to_numeric(df[columna], errors="coerce").astype("float64")
+        detalle = pd.to_numeric(df[f"{columna}_detalle"], errors="coerce").astype("float64")
+        # El detalle rellena lo que la tarjeta no trae: el sitio omite el dato en la
+        # tarjeta cuando es 0 (un quinto de los parqueaderos). Sigue censurado en el
+        # tope, porque la ficha también publica "5 o más". El clip va antes del cast a
+        # Int8: un "150" mal cargado no cabe en el tipo y tiraría la corrida.
+        valores = tarjeta.fillna(detalle).clip(lower=0, upper=tope).astype("Int8")
         df[columna] = valores
         df[f"{columna}_es_tope"] = valores.eq(tope).fillna(False)
         log.info("R8 - %-13s tope=%d | en el tope: %5d | nulos: %5d | máximo observado: %s",
@@ -390,6 +556,78 @@ def normalizar_texto(df):
         log.info("R10 - %-8s únicos: %5d -> %5d | por clave sin tilde: %5d | nulos: %d",
                  columna, antes, df[columna].nunique(),
                  df[f"{columna}_clave"].nunique(), int(df[columna].isna().sum()))
+    # El barrio y la zona del detalle vienen en mayúsculas o como los cargó el anunciante
+    for columna in ("barrio", "zona"):
+        df[columna] = normalizar_lugar(df[columna])
+    return df
+
+
+# --------------------------------------------------------------------------------------
+# 6b. Comodidades - R14
+# --------------------------------------------------------------------------------------
+
+# Una bandera por comodidad frecuente. La clave es la columna; el valor, lo que se busca
+# al INICIO de cada ítem del detalle, ya en minúscula y sin tildes. Los ítems van unidos
+# por " | ", así que el ancla `(?:^|\| )` evita que "tipo de piso en estudio" cuente como
+# estudio o que "cerca a gimnasio" cuente como gimnasio. La lista y las expresiones salen
+# del vocabulario real de detalle_resumen.json (3.687 ítems distintos): entra lo que
+# aparece en más del 4 % de los anuncios y describe algo que mueve el precio.
+COMODIDADES = {
+    # Del edificio o del conjunto
+    "tiene_ascensor": r"ascensor(?=$| \|)|numero de ascensores [1-9]",
+    "tiene_piscina": r"piscina",
+    "tiene_gimnasio": r"gimnasio(?=$| \|)",
+    "tiene_conjunto_cerrado": r"(?:conjunto|unidad) cerrad",
+    "tiene_vigilancia": r"vigilancia|porteria",
+    "tiene_cctv": r"circuito cerrado de tv",
+    "tiene_citofono": r"citofono",
+    "tiene_salon_comunal": r"salon (?:comunal|social)",
+    "tiene_zonas_verdes": r"zonas? verdes?",
+    "tiene_zona_ninos": r"zona (?:para|de) ninos|parque infantil|juegos infantiles",
+    "tiene_bbq": r"(?:zona de )?bbq|asador",
+    "tiene_canchas": r"cancha",
+    "tiene_sauna_turco": r"sauna|turco",
+    "tiene_jacuzzi": r"jacuzzi",
+    "tiene_parqueadero_visitantes": r"parqueadero (?:de )?visitantes",
+    "tiene_parqueadero_cubierto": r"(?:caracteristicas del )?parqueadero cubierto",
+    "tiene_planta_electrica": r"planta electrica",
+    # Del inmueble
+    "tiene_balcon": r"terraza/balcon balcon|balcon(?=$| \|)",
+    "tiene_terraza": r"terraza/balcon terraza|con terraza|terraza rooftop|terraza(?=$| \|)",
+    "tiene_chimenea": r"(?:con )?chimenea",
+    "tiene_deposito": r"deposito(?! 0\b)|cuarto util",
+    "tiene_estudio": r"estudio o biblioteca|estudio(?=$| \|)",
+    "tiene_cocina_integral": r"cocina integral",
+    "tiene_cuarto_servicio": r"cuarto de servicio",
+    "tiene_bano_servicio": r"bano de servicio",
+    "tiene_jardin": r"jardin(?=$| \|)|jardin interior",
+    "tiene_vista_exterior": r"vista exterior",
+    "tiene_vista_panoramica": r"vista panoramica",
+    "tiene_aire_acondicionado": r"aire acondicionado",
+    "tiene_calefaccion": r"(?:con )?calefaccion",
+    "tiene_walking_closet": r"walking closet",
+    "esta_amoblado": r"(?:equipado / )?amoblado|amueblado",
+    "es_monoambiente": r"monoambiente",
+    "acepta_mascotas": r"se permiten mascotas",
+    # Del entorno, según lo declara el anunciante. Son los "puntos de interés" que en la
+    # ablación de OSM no aportaron; acá vuelven a medirse en su versión autorreportada.
+    "es_zona_rural": r"area rural",
+    "cerca_transporte": r"cerca transporte publico",
+    "cerca_colegios": r"cerca colegios|cerca a jardines y colegios",
+    "cerca_parques": r"cerca parques",
+    "cerca_supermercados": r"cerca supermercados",
+    "cerca_centros_comerciales": r"cerca centros comerciales",
+}
+
+
+def derivar_comodidades(df):
+    """Una columna booleana por comodidad. Se busca en el texto completo con el ancla de
+    ítem, vectorizado: 50.000 filas por 40 patrones son segundos."""
+    items = df["comodidades"].astype("string").fillna("").map(sin_tilde).str.lower()
+    for columna, patron in COMODIDADES.items():
+        df[columna] = items.str.contains(rf"(?:^|\| ){patron}", regex=True).astype(bool)
+    frecuencias = {c: round(float(df[c].mean() * 100), 1) for c in COMODIDADES}
+    log.info("R14 - comodidades (%% de filas): %s", frecuencias)
     return df
 
 
@@ -400,6 +638,7 @@ def normalizar_texto(df):
 # Un segmento con menos observaciones que esto no da una valla confiable y cae al
 # respaldo global de su operación.
 N_MINIMO_SEGMENTO = 300
+OPERACION_DE_COLUMNA = {"precio_arriendo": "arriendo", "precio_venta": "venta"}
 
 
 def derivar_precio_m2(df):
@@ -427,7 +666,10 @@ def marcar_outliers(df, columnas=("precio_arriendo", "precio_venta", "area_m2", 
                 inf, sup = vallas_iqr_log(serie)
                 origen = "segmento"
             else:
-                respaldo = df["operacion"].eq(operacion) & es_residencial
+                # El respaldo es la operación dueña de la columna: el canon de un dual se
+                # mide contra los arriendos, no contra los otros pocos duales.
+                duena = OPERACION_DE_COLUMNA.get(columna, operacion)
+                respaldo = df["operacion"].eq(duena) & es_residencial
                 inf, sup = vallas_iqr_log(df.loc[respaldo, columna])
                 origen = "global"
             if np.isnan(inf):
@@ -469,6 +711,9 @@ REGLAS_BLOQUEANTES = [
 # el sesgo que se quiere evitar. Un dato censurado sigue siendo correcto.
 BANDERAS_INFORMATIVAS = [
     "es_dual", "habitaciones_es_tope", "banos_es_tope", "parqueaderos_es_tope",
+    "con_detalle", "precio_desde_detalle", "precio_discrepante", "estrato_invalido",
+    "coordenada_invalida", "area_privada_invalida", "administracion_invalida",
+    "es_near_duplicado",
 ]
 
 CLAVE = ["id_inmueble", "operacion"]
@@ -483,9 +728,29 @@ def consolidar(df):
     return df
 
 
+def marcar_near_duplicados(df):
+    """Mismo proyecto o anuncio republicado con otro id: misma ciudad, sector, tipo, área
+    y precio. El grupo viaja en el dataset para que el split del modelo no vea la
+    respuesta en train y la pregunte en test (GroupKFold), y para que el warehouse pueda
+    deduplicar. Antes este cálculo vivía en un notebook, donde nadie lo reproduce."""
+    llave = (df["ciudad_clave"].astype("string").fillna("") + "|"
+             + df["sector_clave"].astype("string").fillna("") + "|"
+             + df["tipo_inmueble"].astype("string").fillna("") + "|"
+             + df["area_m2"].astype("string").fillna("") + "|"
+             + precio_unificado(df).astype("string").fillna(""))
+    df["grupo_near_duplicado"] = pd.factorize(llave)[0].astype("int32")
+    tamano = df.groupby("grupo_near_duplicado")["grupo_near_duplicado"].transform("size")
+    df["es_near_duplicado"] = (tamano > 1).astype(bool)
+    log.info("Near-duplicados: %s filas (%.2f %%) repiten ciudad, sector, tipo, área y precio",
+             f"{int(df['es_near_duplicado'].sum()):,}", df["es_near_duplicado"].mean() * 100)
+    return df
+
+
 def marcar_ausencias(df):
-    """Sin precio o sin área no hay análisis posible: son motivos de rechazo por derecho propio."""
-    df["sin_precio"] = df["precio_arriendo"].isna() & df["precio_venta"].isna()
+    """Sin precio o sin área no hay análisis posible: son motivos de rechazo por derecho
+    propio. El precio que cuenta es el de la operación de la fila: un arriendo cuyo canon
+    se anuló no se salva porque el detalle traiga un precio de venta."""
+    df["sin_precio"] = precio_unificado(df).isna()
     df["sin_area"] = df["area_m2"].isna()
     return df
 
@@ -580,10 +845,41 @@ def validar(limpio, cuarentena, consolidado):
     ventas = limpio.loc[limpio["precio_venta"].notna(), "precio_venta"]
     revisar(ventas.between(*RANGO_PRECIO["venta"]).all(),
             "R5 - todo precio_venta está dentro de rango")
-    revisar(not (limpio["es_dual"] & limpio["precio_arriendo"].notna()).any(),
-            "D0 - ningún dual conserva canon de arriendo")
+    revisar(not (limpio["es_dual"] & limpio["precio_arriendo"].notna()
+                 & ~limpio["precio_desde_detalle"]).any(),
+            "D0 - ningún dual conserva un canon que no venga del detalle")
     revisar(limpio["area_m2"].between(*RANGO_AREA).all(),
             "R7 - toda área está dentro de rango")
+
+    log.info("Contrato del detalle (R13/R14):")
+    revisar(limpio["estrato"].dropna().between(*RANGO_ESTRATO).all(),
+            "R13 - todo estrato está entre 1 y 6")
+    revisar(limpio["lat"].dropna().between(*BBOX_COLOMBIA["lat"]).all()
+            and limpio["lon"].dropna().between(*BBOX_COLOMBIA["lon"]).all(),
+            "R13 - toda coordenada cae dentro de Colombia")
+    revisar(limpio["lat"].notna().eq(limpio["lon"].notna()).all(),
+            "R13 - lat y lon van juntas: nunca una sin la otra")
+    con_privada = limpio["area_privada"].notna()
+    revisar((limpio.loc[con_privada, "area_privada"]
+             <= limpio.loc[con_privada, "area_m2"] * TOLERANCIA_AREA_PRIVADA).all(),
+            "R13 - ninguna área privada supera la construida")
+    revisar(not (limpio["administracion"].notna() & limpio["precio_arriendo"].notna()
+                 & (limpio["administracion"] > limpio["precio_arriendo"])).any(),
+            "R13 - ninguna administración supera el canon")
+    revisar(limpio["piso"].dropna().between(*RANGO_PISO).all(),
+            "R13 - todo piso está entre 1 y 60")
+    if limpio["con_detalle"].any():
+        cobertura = limpio["con_detalle"].mean()
+        revisar(cobertura > 0.9,
+                f"Detalle - más del 90 % del stage limpio tiene detalle ({cobertura * 100:.1f} %)")
+        con_estrato = limpio.loc[limpio["con_detalle"], "estrato"].notna().mean()
+        revisar(con_estrato > 0.9,
+                f"Detalle - más del 90 % de las filas con detalle tienen estrato "
+                f"({con_estrato * 100:.1f} %)")
+    revisar(limpio[list(COMODIDADES)].dtypes.eq(bool).all(),
+            "R14 - toda bandera de comodidad es booleana")
+    revisar(limpio["grupo_near_duplicado"].notna().all(),
+            "Near-duplicados - toda fila limpia tiene grupo")
 
     for columna, tope in TOPES.items():
         revisar(pd.to_numeric(limpio[columna], errors="coerce").max() <= tope,
@@ -652,6 +948,22 @@ def exportar(limpio, cuarentena, directorio):
         "reetiquetadas_por_slug": int((~todo["tipo_inmueble"].eq(todo["tipo_feed"])).sum()),
         "acuerdo_slug_barrido_%": round(
             todo["tipo_inmueble"].eq(todo["tipo_feed"]).mean() * 100, 2),
+        # Salud del detalle: si `con_detalle` cae, el sitio cambió la página de detalle y
+        # hay que revisar el parser de detail.py, no este script.
+        "con_detalle_%": round(todo["con_detalle"].mean() * 100, 2),
+        "precio_desde_detalle_%": round(todo["precio_desde_detalle"].mean() * 100, 2),
+        "precio_discrepante_%": round(todo["precio_discrepante"].mean() * 100, 2),
+        "invalidos_detalle": {c: int(todo[c].sum()) for c in (
+            "estrato_invalido", "coordenada_invalida", "area_privada_invalida",
+            "administracion_invalida")},
+        "cobertura_limpio_%": {c: round(float(limpio[c].notna().mean() * 100), 2) for c in (
+            "estrato", "lat", "antiguedad_ordinal", "administracion", "area_privada",
+            "piso")},
+        "estrato_limpio": {str(int(k)): int(v) for k, v in
+                           limpio["estrato"].value_counts().sort_index().items()},
+        "near_duplicados_limpio_%": round(limpio["es_near_duplicado"].mean() * 100, 2),
+        "comodidades_limpio_%": {c: round(float(limpio[c].mean() * 100), 1)
+                                 for c in COMODIDADES},
     }
     ruta = directorio / "transform_resumen.json"
     ruta.write_text(json.dumps(resumen, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -663,9 +975,10 @@ def exportar(limpio, cuarentena, directorio):
 # Orquestación
 # --------------------------------------------------------------------------------------
 
-def transformar(crudo):
+def transformar(crudo, detalle=None):
     """Aplica el flujo completo sobre el crudo ya cargado. Devuelve (limpio, cuarentena,
     consolidado, reporte_vallas)."""
+    crudo = unir_detalle(crudo, detalle)
     crudo = resolver_tipo(crudo)
 
     crudo = resolver_operacion(crudo)
@@ -676,16 +989,21 @@ def transformar(crudo):
 
     crudo = sanear_precios(crudo)
     crudo = sanear_areas(crudo)
+    crudo = sanear_detalle(crudo)
     crudo = marcar_area_posible_lote(crudo)
     crudo = marcar_censuradas(crudo)
     crudo = normalizar_texto(crudo)
+    crudo = derivar_comodidades(crudo)
 
     crudo = derivar_precio_m2(crudo)
     crudo, reporte_vallas = marcar_outliers(crudo)
     log.info("precio_m2 calculable en %d de %d filas",
              int(crudo["precio_m2"].notna().sum()), len(crudo))
+    # Lo reconciliado ya vive en las columnas del contrato; no se publica por duplicado
+    crudo = crudo.drop(columns=COLUMNAS_DETALLE_RECONCILIADAS)
 
     consolidado = consolidar(crudo)
+    consolidado = marcar_near_duplicados(consolidado)
     consolidado = marcar_ausencias(consolidado)
     limpio, cuarentena = separar_por_calidad(consolidado)
     return limpio, cuarentena, consolidado, reporte_vallas
@@ -700,6 +1018,10 @@ def parse_args():
                         help="Carpeta de salida (se crea si no existe)")
     parser.add_argument("--entrada-prefijo", default="anuncios",
                         help="Prefijo de los CSV de entrada")
+    parser.add_argument("--detalle", default="data/raw/detalle.parquet",
+                        help="Parquet con el detalle de cada anuncio (salida de detail.py)")
+    parser.add_argument("--sin-detalle", action="store_true",
+                        help="Procesar sólo con la tarjeta, sin unir el detalle")
     parser.add_argument("--operaciones", nargs="+", choices=OPERACIONES,
                         default=list(OPERACIONES), help="Operaciones a procesar")
     parser.add_argument("--sin-validar", action="store_true",
@@ -721,8 +1043,17 @@ def main():
         log.error("%s", error)
         return 1
 
+    detalle = None
+    if not args.sin_detalle:
+        ruta_detalle = Path(args.detalle)
+        if not ruta_detalle.exists():
+            log.error("No existe %s. Corré `python src/detail.py` o pasá --sin-detalle",
+                      ruta_detalle)
+            return 1
+        detalle = cargar_detalle(ruta_detalle)
+
     log.info("Total crudo: %s filas", f"{len(crudo):,}")
-    limpio, cuarentena, consolidado, _ = transformar(crudo)
+    limpio, cuarentena, consolidado, _ = transformar(crudo, detalle)
 
     log.info("Validación del flujo:")
     fallas = validar(limpio, cuarentena, consolidado)
