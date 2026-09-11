@@ -135,7 +135,7 @@ ESQUEMA_GOLD = [
     ("precio_m2", "Nullable(Float64)", "float"),
     ("precio_desde_detalle", "Nullable(Bool)", "bool_nulo"),
     ("precio_discrepante", "Nullable(Bool)", "bool_nulo"),
-    # La ubicación: la coordenada final con su origen, y el respaldo OSM/Esri por detrás
+    # La ubicación: la coordenada final con su origen
     ("lat", "Nullable(Float64)", "float"),
     ("lon", "Nullable(Float64)", "float"),
     ("origen_coordenada", "LowCardinality(Nullable(String))", "str_nulo"),
@@ -143,15 +143,6 @@ ESQUEMA_GOLD = [
     ("distancia_centro_km", "Nullable(Float64)", "float"),
     ("barrio", "LowCardinality(Nullable(String))", "str_nulo"),
     ("zona", "LowCardinality(Nullable(String))", "str_nulo"),
-    ("barrio_osm", "LowCardinality(Nullable(String))", "str_nulo"),
-    ("match_barrio", "LowCardinality(String)", "str"),
-    ("match_verificado", "Nullable(Bool)", "bool_nulo"),
-    ("lat_barrio", "Nullable(Float64)", "float"),
-    ("lon_barrio", "Nullable(Float64)", "float"),
-    ("estrato_modal", "Nullable(UInt8)", "uint8"),
-    ("estrato_promedio", "Nullable(Float64)", "float"),
-    ("estrato_dispersion", "Nullable(Float64)", "float"),
-    ("n_manzanas_estrato", "Nullable(UInt16)", "uint16"),
     # El anuncio (describe la publicación, no el inmueble: no entra al modelo)
     ("n_fotos", "Nullable(Int16)", "int16"),
     ("tiene_video", "Nullable(Bool)", "bool_nulo"),

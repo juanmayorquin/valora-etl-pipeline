@@ -15,14 +15,12 @@ venv/
 # Salidas derivadas: se regeneran corriendo el pipeline, no se versionan.
 #   data/processed/  -> lo produce src/transform.py
 #   data/raw/historico/ -> snapshots de `extract.py --snapshot`, crecen sin techo
-#   data/external/   -> caché de respuestas de OpenStreetMap (notebooks/eda.ipynb)
 #   data/raw/detalle/ -> caché reanudable de src/detail.py; el detalle.parquet consolidado SÍ se versiona
-#   models/          -> artefactos de src/train.py, se regeneran con `docker compose run --rm train`
+#   models/predicciones_oof.parquet -> diagnóstico de src/train.py, se regenera; el modelo y su resumen SÍ se versionan
 data/processed/
 data/raw/historico/
 data/raw/detalle/
-data/external/
-models/
+models/predicciones_oof.parquet
 
 # Archivos temporales que escribe el extract antes del os.replace atómico
 *.tmp.csv

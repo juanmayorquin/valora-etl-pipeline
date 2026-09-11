@@ -1,4 +1,4 @@
-"""Las partes sin red del enriquecimiento (src/enrich.py)."""
+"""El enriquecimiento (src/enrich.py): cascada de coordenada sobre un DataFrame mínimo."""
 import numpy as np
 import pandas as pd
 import pytest
@@ -11,16 +11,6 @@ def test_normalizar_quita_tildes_y_puntuacion():
     assert enrich.normalizar("  El   Poblado - 2 ") == "el poblado 2"
     assert enrich.normalizar(None) == ""
     assert enrich.normalizar(float("nan")) == ""
-
-
-def test_dividir_bbox_parte_lo_grande_y_deja_lo_chico():
-    chico = (4.5, -74.2, 4.7, -74.0)          # ~22 x 22 km
-    assert enrich.dividir_bbox(chico) == [chico]
-    grande = (4.3, -74.4, 4.9, -73.8)         # ~67 x 67 km
-    mosaicos = enrich.dividir_bbox(grande)
-    assert len(mosaicos) > 1
-    assert min(m[0] for m in mosaicos) == pytest.approx(4.3)
-    assert max(m[2] for m in mosaicos) == pytest.approx(4.9)
 
 
 def test_distancia_vectorizada_coincide_con_la_escalar():
@@ -37,18 +27,14 @@ def _anuncios():
         "lat": pd.array([4.67, 4.68, 4.66, None, None, 10.0], dtype="Float64"),
         "lon": pd.array([-74.05, -74.04, -74.06, None, None, -74.0], dtype="Float64"),
         "ubicacion_aproximada": pd.array([False, False, None, None, None, False], dtype="boolean"),
-        "lat_barrio": [np.nan, np.nan, np.nan, np.nan, 4.60, np.nan],
-        "lon_barrio": [np.nan, np.nan, np.nan, np.nan, -74.10, np.nan],
         "estrato": pd.array([6, None, 6, None, None, 3], dtype="Int8"),
-        "estrato_modal": [np.nan, 5.0, np.nan, 4.0, np.nan, np.nan],
     })
 
 
-def test_cascada_de_coordenadas_y_estrato():
+def test_cascada_de_coordenadas():
     df = _anuncios()
     df["origen_coordenada"] = np.where(df["lat"].notna(), "anuncio", "ninguna")
-    centros = enrich.centros_de_ciudad(df, {})
-    assert centros == {}                       # menos de N_MINIMO_CIUDAD anuncios
+    assert enrich.centros_de_ciudad(df) == {}          # menos de N_MINIMO_CIUDAD anuncios
     centros = {"bogota d.c.": (4.65, -74.06)}
 
     df = enrich.anular_coordenadas_lejanas(df, centros)
@@ -61,15 +47,21 @@ def test_cascada_de_coordenadas_y_estrato():
 
     df = enrich.completar_coordenadas(df, sectores)
     assert df["origen_coordenada"].tolist() == [
-        "anuncio", "anuncio", "anuncio", "sector_propio", "barrio_osm", "sector_propio"]
+        "anuncio", "anuncio", "anuncio", "sector_propio", "ninguna", "sector_propio"]
     assert df["lat"].iloc[3] == pytest.approx(4.67)
-    assert df["lat"].iloc[4] == pytest.approx(4.60)
+    assert pd.isna(df["lat"].iloc[4])                  # sector "raro": nulo honesto
 
     df = enrich.agregar_distancia_centro(df, centros)
-    assert df["distancia_centro_km"].notna().all()
-    assert df["distancia_centro_km"].iloc[4] > df["distancia_centro_km"].iloc[3]
+    assert df["distancia_centro_km"].notna().sum() == 5
+    assert pd.isna(df["distancia_centro_km"].iloc[4])
 
-    df = enrich.completar_estrato(df)
-    assert df["origen_estrato"].tolist() == [
-        "anuncio", "barrio_osm", "anuncio", "barrio_osm", "ninguno", "anuncio"]
-    assert df["estrato"].tolist()[1] == 5
+
+def test_enriquecer_de_punta_a_punta_conserva_filas_y_anota_origenes():
+    df = _anuncios().rename(columns={"sector_norm": "sector_clave"})
+    df["ciudad_clave"] = ["bogota d.c."] * 6
+    enriquecido, sectores = enrich.enriquecer(df)
+    assert len(enriquecido) == 6
+    assert "sector_norm" not in enriquecido.columns
+    assert enriquecido["origen_estrato"].tolist() == [
+        "anuncio", "ninguno", "anuncio", "ninguno", "ninguno", "anuncio"]
+    assert set(enrich.COLUMNAS_NUEVAS) <= set(enriquecido.columns)

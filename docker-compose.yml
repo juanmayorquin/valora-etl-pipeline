@@ -130,10 +130,8 @@ services:
     command: python src/transform.py
 
   # Etapa 4 - Enrich:  docker compose run --rm enrich
-  # Completa la coordenada y el estrato de los anuncios que no los traen con la mediana
-  # de los otros anuncios del mismo sector, y calcula la distancia al centro. Sin red.
-  # El respaldo OpenStreetMap + Esri existe (`--con-osm`) pero está apagado: la ablación
-  # midió que aporta +0,002 de R² por 1-2 horas de descargas en cada máquina nueva.
+  # Completa la coordenada de los anuncios que no la traen con la mediana de los otros
+  # anuncios del mismo sector y calcula la distancia al centro. Segundos, sin red.
   enrich:
     <<: *etl
     command: python src/enrich.py

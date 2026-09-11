@@ -1,5 +1,6 @@
 """Las tres copias de la lista de comodidades (transform, load, train) tienen que ser la
 misma: cada script es standalone por convención, así que la única defensa es un test."""
+import enrich
 import load
 import train
 import transform
@@ -19,9 +20,6 @@ def test_toda_columna_del_warehouse_sale_del_transform_o_del_enrich():
         "sector_clave", "precio_m2", "grupo_near_duplicado", "es_near_duplicado",
         "n_motivos_rechazo", "motivo_rechazo",
     } | set(transform.COMODIDADES) | {f"{c}_es_tope" for c in transform.TOPES}
-    del_enrich = {"origen_coordenada", "origen_estrato", "coordenada_lejana",
-                  "distancia_centro_km", "lat_barrio", "lon_barrio", "barrio_osm", "match_barrio",
-                  "match_verificado", "estrato_modal", "estrato_promedio", "estrato_dispersion",
-                  "n_manzanas_estrato"}
+    del_enrich = set(enrich.COLUMNAS_NUEVAS)
     declaradas = {nombre for nombre, _, _ in load.ESQUEMA_GOLD}
     assert declaradas <= del_transform | del_enrich, declaradas - (del_transform | del_enrich)
