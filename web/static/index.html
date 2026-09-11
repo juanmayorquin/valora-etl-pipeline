@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>valora · avalúo residencial</title>
+  <meta name="description" content="Estimá el precio de venta y el canon de arriendo de un inmueble en Colombia y compará con lo que se publica en su zona.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="barra">
+    <a class="marca" href="/">valora<span class="marca__punto">.</span></a>
+    <p class="barra__nota">Avalúo residencial · Colombia · anuncios de septiembre 2026</p>
+    <button class="tema" id="tema" type="button" aria-label="Cambiar tema">
+      <span class="tema__sol"></span>
+    </button>
+  </header>
+
+  <main class="tablero">
+    <!-- ───────── Ficha del inmueble ───────── -->
+    <section class="ficha" aria-labelledby="ficha-titulo">
+      <form id="formulario" novalidate>
+        <div class="ficha__paso">
+          <p class="paso__num">01</p>
+          <h2 id="ficha-titulo" class="paso__titulo">Dónde está</h2>
+
+          <label class="campo">
+            <span class="campo__etiqueta">Ciudad</span>
+            <div class="campo__control">
+              <select name="ciudad" id="ciudad" required></select>
+            </div>
+          </label>
+
+          <label class="campo campo--auto">
+            <span class="campo__etiqueta">Sector o barrio</span>
+            <div class="campo__control">
+              <input name="sector" id="sector" type="text" autocomplete="off" placeholder="Chicó Norte, Laureles, Alto Prado…">
+            </div>
+            <ul class="sugerencias" id="sugerencias" role="listbox" hidden></ul>
+            <small class="campo__ayuda" id="sector-ayuda">Se resuelve contra los sectores que tienen anuncios geolocalizados.</small>
+          </label>
+        </div>
+
+        <div class="ficha__paso">
+          <p class="paso__num">02</p>
+          <h2 class="paso__titulo">Cómo es</h2>
+
+          <div class="campo">
+            <span class="campo__etiqueta">Tipo</span>
+            <div class="segmentos" role="radiogroup">
+              <label><input type="radio" name="tipo" value="apartaestudio"><span>Apartaestudio</span></label>
+              <label><input type="radio" name="tipo" value="apartamento" checked><span>Apartamento</span></label>
+              <label><input type="radio" name="tipo" value="casa"><span>Casa</span></label>
+            </div>
+          </div>
+
+          <div class="fila">
+            <label class="campo">
+              <span class="campo__etiqueta">Área construida</span>
+              <div class="campo__control campo__control--unidad">
+                <input name="area_m2" id="area" type="number" min="16" max="2999" step="1" value="85" required>
+                <span class="unidad">m²</span>
+              </div>
+            </label>
+            <label class="campo">
+              <span class="campo__etiqueta">Estrato</span>
+              <div class="pildoras" id="estrato">
+                <button type="button" data-valor="1">1</button>
+                <button type="button" data-valor="2">2</button>
+                <button type="button" data-valor="3">3</button>
+                <button type="button" data-valor="4" class="activa">4</button>
+                <button type="button" data-valor="5">5</button>
+                <button type="button" data-valor="6">6</button>
+              </div>
+            </label>
+          </div>
+
+          <div class="fila fila--tres">
+            <label class="campo">
+              <span class="campo__etiqueta">Habitaciones</span>
+              <div class="contador">
+                <button type="button" data-menos="habitaciones" aria-label="menos">−</button>
+                <input name="habitaciones" id="habitaciones" type="number" min="0" max="10" value="2">
+                <button type="button" data-mas="habitaciones" aria-label="más">+</button>
+              </div>
+            </label>
+            <label class="campo">
+              <span class="campo__etiqueta">Baños</span>
+              <div class="contador">
+                <button type="button" data-menos="banos" aria-label="menos">−</button>
+                <input name="banos" id="banos" type="number" min="0" max="10" value="2">
+                <button type="button" data-mas="banos" aria-label="más">+</button>
+              </div>
+            </label>
+            <label class="campo">
+              <span class="campo__etiqueta">Parqueaderos</span>
+              <div class="contador">
+                <button type="button" data-menos="parqueaderos" aria-label="menos">−</button>
+                <input name="parqueaderos" id="parqueaderos" type="number" min="0" max="10" value="1">
+                <button type="button" data-mas="parqueaderos" aria-label="más">+</button>
+              </div>
+            </label>
+          </div>
+
+          <div class="fila">
+            <label class="campo">
+              <span class="campo__etiqueta">Antigüedad</span>
+              <div class="campo__control">
+                <select name="antiguedad" id="antiguedad">
+                  <option value="">No sé</option>
+                  <option>Menos de 1 año</option>
+                  <option>Entre 0 y 5 años</option>
+                  <option selected>Entre 5 y 10 años</option>
+                  <option>Entre 10 y 20 años</option>
+                  <option>Más de 20 años</option>
+                </select>
+              </div>
+            </label>
+            <label class="campo">
+              <span class="campo__etiqueta">Piso <em>opcional</em></span>
+              <div class="campo__control">
+                <input name="piso" id="piso" type="number" min="1" max="60" placeholder="—">
+              </div>
+            </label>
+          </div>
+
+          <label class="campo">
+            <span class="campo__etiqueta">Administración mensual <em>opcional</em></span>
+            <div class="campo__control campo__control--unidad">
+              <span class="unidad unidad--izq">$</span>
+              <input name="administracion" id="administracion" type="number" min="0" step="10000" placeholder="—">
+            </div>
+          </label>
+
+          <div class="campo">
+            <span class="campo__etiqueta">Comodidades</span>
+            <div class="chips" id="comodidades">
+              <button type="button" data-valor="ascensor">Ascensor</button>
+              <button type="button" data-valor="conjunto_cerrado">Conjunto cerrado</button>
+              <button type="button" data-valor="vigilancia">Vigilancia</button>
+              <button type="button" data-valor="gimnasio">Gimnasio</button>
+              <button type="button" data-valor="piscina">Piscina</button>
+              <button type="button" data-valor="balcon">Balcón</button>
+              <button type="button" data-valor="terraza">Terraza</button>
+              <button type="button" data-valor="estudio">Estudio</button>
+              <button type="button" data-valor="deposito">Depósito</button>
+              <button type="button" data-valor="chimenea">Chimenea</button>
+              <button type="button" data-valor="amoblado">Amoblado</button>
+              <button type="button" data-valor="cocina_integral">Cocina integral</button>
+              <button type="button" data-valor="parqueadero_visitantes">Parq. visitantes</button>
+              <button type="button" data-valor="zonas_verdes">Zonas verdes</button>
+              <button type="button" data-valor="transporte">Cerca a transporte</button>
+              <button type="button" data-valor="colegios">Cerca a colegios</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="ficha__accion">
+          <button class="boton" id="valuar" type="submit">
+            <span class="boton__texto">Valuar</span>
+            <span class="boton__espera" aria-hidden="true"></span>
+          </button>
+          <p class="ficha__error" id="error" hidden></p>
+        </div>
+      </form>
+    </section>
+
+    <!-- ───────── Resultado ───────── -->
+    <section class="informe" id="informe" aria-live="polite">
+      <div class="portada" id="portada">
+        <p class="portada__kicker">Estimación con rango, y la evidencia al lado</p>
+        <h1 class="portada__titulo">Cuánto vale un inmueble,<br>y cuánto vale <em>alrededor</em>.</h1>
+        <p class="portada__texto">
+          Describí el inmueble a la izquierda. El modelo devuelve el precio de venta y el canon
+          de arriendo con un rango del 80 %, y los pone al lado de los anuncios publicados
+          en la misma zona: la mediana por metro cuadrado, dónde cae tu inmueble entre ellos
+          y los más parecidos en el mapa.
+        </p>
+        <dl class="cifras">
+          <div><dt>anuncios</dt><dd data-cuenta="44836">0</dd></div>
+          <div><dt>ciudades</dt><dd data-cuenta="231">0</dd></div>
+          <div><dt>R² en barrios nuevos</dt><dd data-cuenta="0.92" data-decimales="2">0</dd></div>
+        </dl>
+      </div>
+
+      <div class="esqueleto" id="esqueleto" hidden>
+        <div class="esqueleto__bloque esqueleto__bloque--alto"></div>
+        <div class="esqueleto__fila"><div class="esqueleto__bloque"></div><div class="esqueleto__bloque"></div></div>
+        <div class="esqueleto__bloque esqueleto__bloque--mapa"></div>
+      </div>
+
+      <div class="resultado" id="resultado" hidden>
+        <header class="resultado__cabecera">
+          <p class="resultado__kicker" id="res-kicker"></p>
+          <h2 class="resultado__titulo" id="res-titulo"></h2>
+          <p class="resultado__contexto" id="res-contexto"></p>
+        </header>
+
+        <div class="avaluos">
+          <article class="avaluo avaluo--venta">
+            <p class="avaluo__etiqueta">Venta</p>
+            <p class="avaluo__cifra"><span class="moneda">$</span><span id="venta-cifra" data-cuenta="0">0</span></p>
+            <p class="avaluo__m2"><span id="venta-m2"></span> por m²</p>
+            <div class="rango">
+              <div class="rango__barra"><span class="rango__marca" id="venta-marca"></span></div>
+              <div class="rango__extremos"><span id="venta-bajo"></span><span>rango 80 %</span><span id="venta-alto"></span></div>
+            </div>
+          </article>
+          <article class="avaluo avaluo--arriendo">
+            <p class="avaluo__etiqueta">Arriendo mensual</p>
+            <p class="avaluo__cifra"><span class="moneda">$</span><span id="arriendo-cifra" data-cuenta="0">0</span></p>
+            <p class="avaluo__m2"><span id="arriendo-m2"></span> por m²</p>
+            <div class="rango">
+              <div class="rango__barra"><span class="rango__marca" id="arriendo-marca"></span></div>
+              <div class="rango__extremos"><span id="arriendo-bajo"></span><span>rango 80 %</span><span id="arriendo-alto"></span></div>
+            </div>
+          </article>
+        </div>
+        <p class="rentabilidad" id="rentabilidad"></p>
+
+        <section class="zona">
+          <div class="zona__cabecera">
+            <h3>Frente a la zona</h3>
+            <div class="conmutador" role="tablist">
+              <button type="button" class="activa" data-op="venta" role="tab">Venta</button>
+              <button type="button" data-op="arriendo" role="tab">Arriendo</button>
+            </div>
+          </div>
+          <p class="zona__lectura" id="zona-lectura"></p>
+          <div class="histograma" id="histograma"></div>
+          <div class="histograma__ejes" id="histograma-ejes"></div>
+        </section>
+
+        <section class="mapa-seccion">
+          <div class="mapa" id="mapa"></div>
+          <p class="mapa__nota" id="mapa-nota"></p>
+        </section>
+
+        <section class="comparables">
+          <h3>Los más parecidos, publicados</h3>
+          <ol class="comparables__lista" id="comparables"></ol>
+        </section>
+
+        <footer class="resultado__pie">
+          <p id="pie-origen"></p>
+          <p>Son precios de publicación, no de cierre: lo que piden, no lo que pagan. El rango cubre el
+            80 % de los casos medido sobre anuncios que el modelo no vio al entrenarse.</p>
+        </footer>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

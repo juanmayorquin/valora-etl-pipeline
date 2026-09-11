@@ -5,6 +5,7 @@
 #   docker compose up -d                       # lakehouse (MinIO + ClickHouse)
 #   docker compose run --rm reprocesar         # raw versionado -> modelo, sin scrapear
 #   docker compose run --rm pipeline           # las seis etapas, scraping incluido
+#   docker compose up -d web                   # la interfaz web en localhost:8000
 #   docker compose --profile notebooks up -d   # Jupyter en localhost:8888
 
 # Configuración común de las etapas: misma imagen, mismos volúmenes.
@@ -222,6 +223,22 @@ services:
           echo "[$$(date -u +%Y-%m-%dT%H:%M:%SZ)] durmiendo $${INTERVALO_HORAS}h"
           sleep $$(( $${INTERVALO_HORAS} * 3600 ))
         done
+
+  # =============================== Interfaz web ============================
+  # La página para valuar un inmueble y compararlo con su zona:  docker compose up -d web
+  # Usa el modelo versionado en models/ y el gold de data/processed/. Si el gold no existe
+  # todavía (clon nuevo sin reprocesar), primero `docker compose run --rm reprocesar`.
+  web:
+    <<: *etl
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    command: uvicorn web.app:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/ciudades', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   # =============================== Notebooks ===============================
   # Jupyter Lab con todo instalado:  docker compose --profile notebooks up -d

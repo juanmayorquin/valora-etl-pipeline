@@ -22,3 +22,7 @@ clickhouse-connect==0.8.11
 # a este tamaño de datos. joblib serializa el artefacto.
 scikit-learn==1.7.2
 joblib==1.5.2
+
+# Interfaz web (web/app.py): la API que sirve el modelo y la página.
+fastapi==0.141.1
+uvicorn==0.52.4
