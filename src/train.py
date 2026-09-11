@@ -12,6 +12,24 @@ Qué produce en `models/`:
     predicciones_oof.parquet      predicción out-of-fold de cada anuncio, para diagnóstico
 
 Y sube el artefacto a `s3://<bucket>/models/fecha=YYYY-MM-DD/` salvo `--sin-minio`.
+El modelo y su resumen se versionan en el repo: un clon puede predecir sin entrenar.
+
+Métricas que reporta, y qué mide cada una:
+
+    entrenamiento    el modelo final evaluado sobre las filas con que se ajustó. NO mide
+                     generalización; mide la brecha contra out-of-fold (sobreajuste).
+    conocido         out-of-fold con GroupKFold por near-duplicado: la unidad republicada
+                     nunca queda repartida entre train y test, pero el barrio sí se vio.
+    frio             out-of-fold con GroupKFold por sector: el sector entero queda de un
+                     solo lado. Es el número que se parece a producción.
+
+    R²               fracción de la varianza de log(precio) que el modelo explica.
+    MAE_log          error absoluto medio en log; ~ error relativo medio.
+    MAPE / MdAPE     error porcentual medio / mediano sobre el precio real. El mediano es
+                     robusto a los anuncios absurdos; el medio los sufre.
+    dentro_10/20     % de anuncios cuyo error queda por debajo del 10 % / 20 %.
+    cobertura        % de anuncios reales que caen dentro del rango p10-p90 (objetivo 80 %),
+                     antes y después de calibrar el factor k sobre folds no vistos.
 
 Decisiones de modelado, y por qué:
 
@@ -442,6 +460,18 @@ def main():
         artefacto["modelos"][operacion] = {
             nombre: construir(parametros, cuantil).fit(X, y)
             for nombre, cuantil in CUANTILES.items()}
+        # Métricas EN ENTRENAMIENTO del modelo final: las mismas filas con que se ajustó.
+        # No miden capacidad de generalizar (para eso están las out-of-fold); miden la
+        # brecha train/test, que es el termómetro del sobreajuste.
+        en_train = {nombre: m.predict(X) for nombre, m in artefacto["modelos"][operacion].items()}
+        evaluacion["entrenamiento"] = metricas(y, en_train["p50"], en_train["p10"], en_train["p90"])
+        evaluacion["brecha_train_oof"] = {
+            "R2": round(evaluacion["entrenamiento"]["R2"] - evaluacion["conocido"]["R2"], 4),
+            "MAE_log": round(evaluacion["conocido"]["MAE_log"] - evaluacion["entrenamiento"]["MAE_log"], 4),
+            "MdAPE_%": round(evaluacion["conocido"]["MdAPE_%"] - evaluacion["entrenamiento"]["MdAPE_%"], 2),
+        }
+        log.info("    en entrenamiento: %s", json.dumps(evaluacion["entrenamiento"]))
+        log.info("    brecha train vs. out-of-fold: %s", json.dumps(evaluacion["brecha_train_oof"]))
         artefacto["metricas"][operacion] = evaluacion
         resumen["operaciones"][operacion] = {
             "filas": int(len(y)), "parametros": parametros, **evaluacion,
@@ -474,8 +504,9 @@ def main():
         frio = evaluacion["frio"]["R2"]
         veredicto = "PASA" if r2 >= args.minimo_r2 else "NO PASA"
         pasa &= r2 >= args.minimo_r2
-        log.info("  %-9s R2 conocido = %.3f | frío = %.3f | MdAPE = %.1f %% -> %s", operacion,
-                 r2, frio, evaluacion["conocido"]["MdAPE_%"], veredicto)
+        log.info("  %-9s R2 train = %.3f | conocido = %.3f | frío = %.3f | MdAPE = %.1f %% -> %s",
+                 operacion, evaluacion["entrenamiento"]["R2"], r2, frio,
+                 evaluacion["conocido"]["MdAPE_%"], veredicto)
     return 0 if pasa else 1
 
 

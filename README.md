@@ -68,7 +68,8 @@ docker compose run --rm reprocesar        # transform -> enrich -> load -> train
 
 Eso parte de lo que ya está versionado en `data/raw/` (los anuncios extraídos y su detalle),
 construye el stage limpio, lo enriquece, lo carga al lakehouse y entrena el modelo.
-**Unos siete minutos** en una máquina normal (el entrenamiento se lleva seis), y sin tocar la red: todo lo que
+**Unos siete minutos** en una máquina normal (el entrenamiento se lleva seis), y como el
+modelo entrenado viene en el repo, el sandbox y `predict.py` funcionan **antes** de correr nada, y sin tocar la red: todo lo que
 necesita ya viene en el repo.
 
 Después, el sandbox:
@@ -128,21 +129,44 @@ El lakehouse:
 
 ## Resultados
 
-Métricas out-of-fold con split agrupado, en dos regímenes. **`frio` es el que importa**: agrupa
-por sector, así que el modelo tiene que valuar barrios que nunca vio, que es lo que pasa en
-producción.
+Tres filas por operación. **`entrenamiento`** es el modelo final sobre las mismas filas con
+que se ajustó: no mide generalización, mide cuánto memoriza. **`conocido`** y **`frío`** son
+out-of-fold con split agrupado: el primero por near-duplicado (barrios ya vistos), el segundo
+por sector entero, así que el modelo tiene que valuar barrios que nunca vio. **`frío` es el
+que importa**: es lo que pasa en producción.
 
-| operación | régimen | n | R² | MdAPE | dentro de ±20 % |
-|---|---|---|---|---|---|
-| arriendo | conocido | 22.386 | 0,911 | 13,5 % | 66,1 % |
-| arriendo | **frío** | 22.386 | **0,902** | 14,7 % | 63,3 % |
-| venta | conocido | 22.859 | 0,928 | 12,8 % | 68,7 % |
-| venta | **frío** | 22.859 | **0,922** | 13,4 % | 66,7 % |
+| operación | régimen | n | R² | MAE log | MdAPE | dentro de ±10 % | dentro de ±20 % |
+|---|---|---|---|---|---|---|---|
+| arriendo | entrenamiento | 22.386 | 0,958 | 0,124 | 9,4 % | 52,4 % | 80,5 % |
+| arriendo | conocido | 22.386 | 0,911 | 0,181 | 13,5 % | 38,4 % | 66,1 % |
+| arriendo | **frío** | 22.386 | **0,902** | **0,191** | **14,7 %** | 36,3 % | 63,3 % |
+| venta | entrenamiento | 22.859 | 0,970 | 0,113 | 8,8 % | 55,3 % | 84,1 % |
+| venta | conocido | 22.859 | 0,928 | 0,171 | 12,8 % | 40,8 % | 68,7 % |
+| venta | **frío** | 22.859 | **0,922** | **0,178** | **13,4 %** | 39,1 % | 66,7 % |
+
+Cómo leerlas. **R²** es la fracción de la varianza de `log(precio)` que el modelo explica.
+**MAE log** es el error absoluto medio en log, que equivale al error relativo medio: 0,19 es
+un 19 %. **MdAPE** es el error porcentual *mediano*: la mitad de los anuncios se predice
+mejor que eso, y no lo inflan los anuncios absurdos como al MAPE. **Dentro de ±10 / ±20 %**
+es lo que un usuario siente como "acertó".
+
+**La brecha entre entrenamiento y out-of-fold es de 0,04–0,05 de R² y 4 puntos de MdAPE.**
+Un boosting siempre memoriza algo; ésta es la medida de cuánto, y es el número a vigilar en
+cada corrida nueva. La brecha entre `conocido` y `frío` es de 0,006–0,009: el modelo casi
+no depende de haber visto el barrio, porque cada anuncio trae su propia ubicación.
+
+Por tipo de inmueble, los apartamentos se predicen mejor (MdAPE 11 %) que las casas (16–17 %):
+una casa tiene lote, niveles y estados de conservación que la tarjeta no describe. Por ciudad,
+Sabaneta, Envigado y Bogotá bajan del 12 %; Cartagena (16–21 %) y Barranquilla (14–18 %) son
+las peores, con menos anuncios y mercados más heterogéneos. El desglose completo está en
+`models/entrenamiento_resumen.json` y en el notebook 05.
 
 El rango que devuelve el modelo (p10–p90) se calibra sobre datos que el modelo no vio hasta
 cubrir el 80 % de los casos. Crudo, cubría el 69,0 % en arriendo y el 68,2 % en venta; calibrado
 (k = 1,35 y 1,40, ajustado en tres folds) llega al 80,4 % y al 81,4 % en los dos folds que la
-calibración nunca vio.
+calibración nunca vio. El precio: un rango más ancho, del 82–87 % del valor estimado de punta a
+punta en la mediana. En entrenamiento el rango crudo ya cubre el 80 %: otra cara de la misma
+brecha.
 
 Cómo se llegó acá, medido paso a paso:
 
@@ -161,7 +185,7 @@ Cada anuncio termina con **121 columnas** en el gold. De dónde sale cada una:
 | extract | lo que muestra la tarjeta del listado | precio, área, habitaciones, baños, parqueaderos, sector, ciudad |
 | detail | lo que trae la ficha del anuncio | `lat`/`lon`, `estrato`, `antiguedad`, `administracion`, `area_privada`, `piso`, `comodidades`, `estado_inmueble` |
 | transform | reglas de calidad y derivadas | `precio_m2`, `precio_discrepante`, `estrato_invalido`, 40 banderas `tiene_*` / `cerca_*`, `grupo_near_duplicado` |
-| enrich | ubicación resuelta en cascada | `origen_coordenada` (anuncio → sector propio → barrio OSM), `origen_estrato`, `distancia_centro_km`, `estrato_modal` |
+| enrich | ubicación resuelta en cascada | `origen_coordenada` (anuncio → mediana del sector propio), `origen_estrato`, `distancia_centro_km` |
 
 **La cuarentena no es un descarte, es una separación**: lo rechazado queda en disco con su
 `motivo_rechazo`, y si una regla resulta demasiado estricta se reprocesa desde ahí. El
@@ -190,10 +214,11 @@ en medio segundo y trae embebido un JSON con la coordenada exacta, el estrato, l
 la administración y las comodidades del inmueble. Cobertura de coordenada: **97,6 %** (91,1 % del propio anuncio, el resto por la mediana
 de los otros anuncios del mismo sector), y de estrato **98,4 %**.
 
-**Y el respaldo, medido otra vez, quedó redundante.** Con la coordenada y el estrato del
-propio anuncio en la mesa, sumar OSM y Esri aporta +0,002 de R² como máximo y rescata el
-0,7 % de las filas, a cambio de una o dos horas de red en cada máquina nueva. Sigue en el
-código detrás de `--con-osm`, apagado por defecto: el `reprocesar` corre sin conexión.
+**Y el respaldo, medido otra vez, quedó redundante y se borró.** Con la coordenada y el
+estrato del propio anuncio en la mesa, sumar OSM y Esri aportaba +0,002 de R² como máximo,
+restaba en arranque en frío, y rescataba el 0,7 % de las filas a cambio de una o dos horas de
+red en cada máquina nueva. Se quitó entero del pipeline; los números y la historia quedan en
+`notebooks/04_ablacion_features.ipynb` y el código en el historial de git.
 
 **Lo que se guarda y lo que no.** La ficha trae el teléfono y el WhatsApp del anunciante; el
 parser los descarta y nunca se escriben. Queda el id de la inmobiliaria, no su contacto.
@@ -229,13 +254,14 @@ está publicado.
 ├── tests/                   pytest sobre el parser, las reglas y la predicción
 ├── data/
 │   ├── raw/                 SE VERSIONA: anuncios extraídos + detalle.parquet
-│   ├── processed/           se regenera: stages limpio, cuarentena y enriquecido
-│   └── external/            se regenera: caché de OpenStreetMap y Esri (sólo con --con-osm)
-└── models/                  se regenera: artefacto, métricas y predicciones out-of-fold
+│   └── processed/           se regenera: stages limpio, cuarentena y enriquecido
+└── models/                  SE VERSIONA el modelo y su resumen; las predicciones OOF se regeneran
 ```
 
-La regla de versionado es una sola: **lo que viene de afuera se versiona, lo derivado se
-regenera.** Por eso un clon arranca sin scrapear y sin depender de que el sitio siga igual.
+La regla de versionado: **lo que viene de afuera se versiona, lo derivado se regenera.** Por
+eso un clon arranca sin scrapear y sin depender de que el sitio siga igual. La única
+excepción es el modelo entrenado (`models/valora_modelo.joblib`, 10 MB): se versiona para que
+el sandbox y `predict.py` funcionen en un clon **antes** de correr nada.
 
 ## Correr sin Docker
 
@@ -266,7 +292,7 @@ Los comandos se corren desde la raíz del repo: las rutas por defecto son relati
 | `extract.py` | `--tipos`, `--operaciones`, `--max-paginas N`, `--snapshot` | acotar el barrido; guardar copia con fecha |
 | `detail.py` | `--hilos 8`, `--pausa 0.15`, `--muestra N`, `--minimo-exito 0.95` | ritmo de descarga; probar con N anuncios |
 | `transform.py` | `--sin-detalle`, `--sin-validar` | sólo con la tarjeta; no fallar por validaciones |
-| `enrich.py` | `--con-osm`, `--ciudades 15` | encender el respaldo OpenStreetMap + Esri (1–2 h de red); en cuántas ciudades |
+| `enrich.py` | `--sin-validar` | no fallar por validaciones |
 | `load.py` | `--capas`, `--fecha`, `--sin-clickhouse`, `--recrear-tablas` | qué capas subir; partición; sólo lago |
 | `train.py` | `--sin-busqueda`, `--desde-clickhouse`, `--minimo-r2 0.85`, `--sin-minio` | rápido; leer del warehouse; compuerta |
 | `predict.py` | `--json`, y un flag por atributo del inmueble | salida para máquinas |
@@ -293,6 +319,7 @@ la de mañana desde Docker. No rompe nada; si querés que coincidan, pasá `--fe
 - **Metrocuadrado**: los anuncios son de su sitio público. Uso académico y de portafolio, con
   descarga acotada (8 hilos, pausa entre pedidos, respeto de `robots.txt`) y sin guardar
   datos de contacto de los anunciantes.
-- **OpenStreetMap** © colaboradores de OpenStreetMap, bajo [ODbL](https://www.openstreetmap.org/copyright);
-  vía Overpass y Nominatim, con caché para no repetir consultas.
-- **Esri Colombia**, capa *Estrato predominante por manzana 2018* del Living Atlas.
+- **OpenStreetMap** © colaboradores de OpenStreetMap ([ODbL](https://www.openstreetmap.org/copyright))
+  y **Esri Colombia** (*Estrato predominante por manzana 2018*) se usaron en la etapa de
+  exploración para el respaldo geográfico que después se descartó; el pipeline actual no
+  los consulta.
