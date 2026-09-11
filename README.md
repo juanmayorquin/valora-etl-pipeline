@@ -3,8 +3,11 @@
 # valora-etl-pipeline
 
 **De 50.000 anuncios inmobiliarios a un modelo que valúa un inmueble en venta y en arriendo.**<br>
-Un pipeline ETL de seis etapas, un lakehouse con MinIO + ClickHouse y un modelo con rango de
-confianza, todo levantado con un `docker compose`.
+Un pipeline ETL de seis etapas, un lakehouse con MinIO + ClickHouse, un modelo con rango de
+confianza y una interfaz web que lo pone al lado de los anuncios de la zona. Todo con un
+`docker compose`.
+
+<img src="docs/capturas/web-resultado.png" alt="La interfaz web: avalúo de venta y arriendo con rango, y la comparación con la zona" width="880">
 
 [![ci](https://github.com/juanmayorquin/valora-etl-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/juanmayorquin/valora-etl-pipeline/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white)
@@ -12,6 +15,8 @@ confianza, todo levantado con un `docker compose`.
 ![minio](https://img.shields.io/badge/MinIO-lago-C72E49?logo=minio&logoColor=white)
 ![clickhouse](https://img.shields.io/badge/ClickHouse-warehouse-FFCC01?logo=clickhouse&logoColor=black)
 ![sklearn](https://img.shields.io/badge/scikit--learn-HistGradientBoosting-F7931E?logo=scikitlearn&logoColor=white)
+![fastapi](https://img.shields.io/badge/FastAPI-web-009688?logo=fastapi&logoColor=white)
+![licencia](https://img.shields.io/badge/licencia-MIT-4c1?)
 
 </div>
 
@@ -22,8 +27,9 @@ confianza, todo levantado con un `docker compose`.
 Extrae los anuncios residenciales de [metrocuadrado.com](https://www.metrocuadrado.com), visita
 el detalle de cada uno, los sanea contra un conjunto de reglas de calidad, resuelve la
 ubicación de cada inmueble, los deja en un lakehouse y entrena dos modelos de precio: uno para
-**venta** y otro para **arriendo**. Al final hay un sandbox donde describís un inmueble y el
-modelo te dice cuánto vale, con rango.
+**venta** y otro para **arriendo**. Al final hay una **interfaz web** y un sandbox en notebook
+donde describís un inmueble y el modelo te dice cuánto vale, con rango, y cómo se compara con
+lo que se publica alrededor.
 
 Cada etapa se valida a sí misma y sale con código 1 si algo no cierra. Cada decisión de
 modelado se midió antes de tomarse, y lo que no aportó **se borró**, con el número que lo
@@ -56,6 +62,22 @@ flowchart LR
 lugares a propósito: si mañana cambia el esquema, el lago tiene los Parquet originales y
 ClickHouse se reconstruye desde ahí. Al revés no se puede.
 
+### Diagramas de ingeniería
+
+Tres diagramas hechos con [archify](https://github.com/tt-a1i/archify), validados en su perfil
+*showcase* (sin cruces ni etiquetas superpuestas) y con evidencia de navegador sin desborde a
+1440, 1600 y 1920 px. Cada uno tiene una versión **interactiva** en HTML (temas, zoom, búsqueda,
+vistas guiadas, exportación): abrí el archivo desde un clon, GitHub no la renderiza.
+
+| | |
+|---|---|
+| **Arquitectura de contenedores** · [`docs/diagramas/arquitectura.html`](docs/diagramas/arquitectura.html) | **Flujo de los datos** · [`docs/diagramas/flujo-de-datos.html`](docs/diagramas/flujo-de-datos.html) |
+| <img src="docs/diagramas/arquitectura.png" alt="Arquitectura de contenedores" width="560"> | <img src="docs/diagramas/flujo-de-datos.png" alt="Flujo de los datos" width="560"> |
+
+**Una solicitud de avalúo, paso a paso** · [`docs/diagramas/valuacion.html`](docs/diagramas/valuacion.html)
+
+<img src="docs/diagramas/valuacion.png" alt="Secuencia de una solicitud de avalúo" width="880">
+
 ## Arranque en tres comandos
 
 Sólo hace falta Docker (Engine 20.10+ con `compose` v2). Ni Python, ni Chromium.
@@ -72,13 +94,27 @@ construye el stage limpio, lo enriquece, lo carga al lakehouse y entrena el mode
 modelo entrenado viene en el repo, el sandbox y `predict.py` funcionan **antes** de correr nada, y sin tocar la red: todo lo que
 necesita ya viene en el repo.
 
-Después, el sandbox:
+Después, la interfaz web:
+
+```bash
+docker compose up -d web                  # http://localhost:8000
+```
+
+Describís el inmueble (ciudad, sector con autocompletar, tipo, área, estrato, antigüedad,
+comodidades…) y la página devuelve el precio de venta y el canon de arriendo con su rango del
+80 %, y los pone al lado de la zona: cuántos anuncios parecidos hay alrededor, la mediana por
+metro cuadrado, en qué percentil cae tu avalúo, un histograma, el mapa con los comparables y
+los ocho más parecidos con enlace al anuncio original. Modo claro y oscuro.
+
+<img src="docs/capturas/web-oscuro.png" alt="La interfaz web en modo oscuro" width="880">
+
+El sandbox en notebook hace lo mismo desde Python:
 
 ```bash
 docker compose --profile notebooks up -d  # Jupyter en http://localhost:8888 (token: valora)
 ```
 
-y abrí `notebooks/05_modelo_y_sandbox.ipynb`. O sin notebook:
+y abrí `notebooks/05_modelo_y_sandbox.ipynb`. O por línea de comandos:
 
 ```bash
 docker compose run --rm train python src/predict.py --ciudad "Bogotá D.C." --sector "Chicó Norte" \
@@ -113,6 +149,7 @@ defaults de desarrollo: usuario `valora`, contraseña `valora123`.
 | `enrich` | `docker compose run --rm enrich` | 4 · enrich: coordenada, estrato y distancia al centro, sin red | segundos |
 | `load` | `docker compose run --rm load` | 5 · load: sube a MinIO y puebla ClickHouse | segundos |
 | `train` | `docker compose run --rm train` | 6 · train: entrena, evalúa y publica el artefacto | ~6 min |
+| `web` | `docker compose up -d web` | La interfaz web sobre el modelo versionado, en `:8000` | — |
 | `jupyter` | `docker compose --profile notebooks up -d` | Jupyter Lab con los notebooks, en `:8888` | — |
 | `pipeline-periodico` | `docker compose --profile periodico up -d` | El pipeline completo cada `INTERVALO_HORAS` | permanente |
 
@@ -175,6 +212,35 @@ Cómo se llegó acá, medido paso a paso:
 | tarjeta del anuncio (5 features) | 0,833 | 0,860 | el baseline del EDA |
 | + coordenada y estrato del barrio (OSM + Esri) | 0,878 | 0,904 | la ubicación entra, pero sólo para el 40 % de las filas |
 | + el detalle de cada anuncio, y búsqueda de hiperparámetros | **0,911** | **0,928** | coordenada y estrato del propio inmueble, antigüedad, comodidades… para todas las filas |
+
+### Lo que se probó para superarlo
+
+Diez experimentos con el mismo protocolo (`GroupKFold` de 5 folds, dos regímenes, mismas filas
+y features), en `notebooks/06_experimentos_modelo.ipynb`. La regla se fijó antes de correrlos:
+**gana el R² en frío, y lo que no supere al actual por al menos 0,005 no entra**,
+porque por debajo de eso cambiar el split mueve más que cambiar el modelo.
+
+| experimento | arriendo R² frío | venta R² frío | promedio | Δ vs E0 | MdAPE arriendo | MdAPE venta |
+|---|---|---|---|---|---|---|
+| E8 mezcla (E4 + E3) | 0,907 | 0,926 | 0,916 | +0,004 | 14,2 % | 13,3 % |
+| E4 CatBoost | 0,905 | 0,925 | 0,915 | +0,003 | 14,4 % | 13,4 % |
+| E9 CatBoost + búsqueda | 0,905 | 0,925 | 0,915 | +0,003 | 14,3 % | 13,4 % |
+| E3 LightGBM | 0,904 | 0,922 | 0,913 | +0,001 | 14,2 % | 13,5 % |
+| E1 target log(precio/m²) | 0,903 | 0,923 | 0,913 | +0,001 | 14,5 % | 13,4 % |
+| E7 modelo conjunto | 0,905 | 0,922 | 0,913 | +0,001 | 14,5 % | 13,7 % |
+| E2a HGB + vecinos k=10 | 0,902 | 0,922 | 0,912 | +0,000 | 14,4 % | 13,3 % |
+| **E0 HGB actual** | 0,902 | 0,922 | 0,912 | +0,000 | 14,7 % | 13,4 % |
+| E2b HGB + vecinos k=25 | 0,902 | 0,922 | 0,912 | +0,000 | 14,6 % | 13,4 % |
+| E6 Ridge + splines | 0,874 | 0,895 | 0,884 | −0,028 | 17,0 % | 16,6 % |
+| E5 ExtraTrees | 0,875 | 0,892 | 0,883 | −0,029 | 16,9 % | 16,6 % |
+
+**E8 mezcla (E4 + E3)** es el mejor: +0,0041 de R² en frío sobre el actual, por debajo del umbral de 0,005. **Se queda el modelo actual.** Cuatro boostings distintos caen en la misma banda:
+la arquitectura dejó de ser el cuello de botella. El rezago espacial no aporta porque cada
+anuncio ya trae su coordenada, el precio por m² y el modelo conjunto son reformulaciones del
+mismo problema, y lo lineal marca el piso: el 88 % de la varianza es ubicación, área y
+estrato. CatBoost y la mezcla con LightGBM ganan menos de medio punto a cambio de dos
+dependencias compiladas y un entrenamiento más largo; si el dataset crece, es el primer
+experimento a repetir.
 
 ## El dataset
 
@@ -244,13 +310,20 @@ está publicado.
 │   ├── load.py              5 · MinIO (bronze/silver/gold) + ClickHouse, idempotente
 │   ├── train.py             6 · dos modelos con cuantiles, evaluación agrupada, compuerta
 │   └── predict.py           venta y arriendo para un inmueble, por CLI o desde Python
+├── web/
+│   ├── app.py               FastAPI: /api/valuar, /api/sectores, /api/ciudades y la página
+│   └── static/              index.html, app.css, app.js: sin framework ni build
+├── docs/
+│   ├── diagramas/           arquitectura, flujo de datos y secuencia (JSON + HTML + PNG)
+│   └── capturas/            capturas de la interfaz web
 ├── notebooks/
 │   ├── 00_scraper_prototipo.ipynb
 │   ├── 01_eda_datos_crudos.ipynb      de acá salieron las reglas R2-R12
 │   ├── 02_transform_prototipo.ipynb
 │   ├── 03_eda_modelado.ipynb          por qué hacía falta la ubicación
 │   ├── 04_ablacion_features.ipynb     qué aporta cada bloque y qué se borró
-│   └── 05_modelo_y_sandbox.ipynb      resultados del modelo y el sandbox
+│   ├── 05_modelo_y_sandbox.ipynb      resultados del modelo y el sandbox
+│   └── 06_experimentos_modelo.ipynb   qué arquitecturas y técnicas se probaron, y cuál ganó
 ├── tests/                   pytest sobre el parser, las reglas y la predicción
 ├── data/
 │   ├── raw/                 SE VERSIONA: anuncios extraídos + detalle.parquet
@@ -310,7 +383,7 @@ la de mañana desde Docker. No rompe nada; si querés que coincidan, pasá `--fe
 - [x] Lakehouse MinIO + ClickHouse con esquema que evoluciona sin recrear tablas
 - [x] Tests con pytest y CI que construye la imagen
 - [ ] Acumular snapshots para aprender la variación en el tiempo
-- [ ] Una API mínima sobre `src/predict.py`
+- [x] Interfaz web con comparables de la zona (`web/`)
 - [ ] Congelar las vallas de outliers contra una línea base: hoy se recalculan en cada
       corrida, así que dos corridas pueden clasificar distinto la misma fila
 
