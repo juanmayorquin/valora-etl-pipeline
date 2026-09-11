@@ -90,10 +90,9 @@ Y si el transform falla, tampoco corre el enrich: no hay stage limpio que enriqu
 
 ### El enriquecimiento y su caché
 
-La etapa 3 le pega a cuatro servicios públicos (OpenStreetMap, Nominatim, el servicio de
-estrato de Esri Colombia y el de delitos de la SCJ de Bogotá). La **primera** corrida tarda
-una o dos horas; las siguientes son de segundos, porque **cada respuesta queda cacheada en
-`data/external/`**.
+La etapa 3 le pega a tres servicios públicos (OpenStreetMap vía Overpass, Nominatim y el
+servicio de estrato de Esri Colombia). La **primera** corrida tarda una o dos horas; las
+siguientes son de segundos, porque **cada respuesta queda cacheada en `data/external/`**.
 
 Ese caché es lo que hace la etapa reanudable: si la corrida se corta a mitad —o Overpass
 devuelve 504, que pasa seguido—, volver a lanzarla **retoma donde quedó** en vez de
@@ -102,7 +101,6 @@ re-descargar todo. Borrar `data/external/` es válido pero cuesta otra corrida c
 ```bash
 docker compose run --rm enrich                    # 15 ciudades (85 % de los anuncios)
 docker compose run --rm enrich --ciudades 5       # más rápido, menos cobertura
-docker compose run --rm enrich --sin-pois         # omite los puntos de interés
 ```
 
 ### La base de datos
@@ -131,9 +129,7 @@ data/
 └── external/                 ← caché de las APIs públicas, NO se versiona
     ├── bbox_*.json                     bounding box por ciudad (Nominatim)
     ├── osm_*.json                      barrios y jerarquía administrativa (Overpass)
-    ├── pois_*.json                     puntos de interés por ciudad (Overpass)
     ├── estrato_*.json                  estrato por barrio (Esri Colombia)
-    └── crimen_bogota_*.json            delitos por localidad (SCJ Bogotá)
 ```
 
 **La cuarentena no es un descarte, es una separación.** Queda en disco, auditable, y si
@@ -241,11 +237,16 @@ si alguna validación falló (transform). Sirven para encadenar en cron o CI.
 | Flag | Por defecto | Para qué |
 |---|---|---|
 | `--ciudades N` | 15 | Cuántas ciudades enriquecer, por volumen de anuncios |
-| `--radio-poi` | 1000 | Radio en metros para contar puntos de interés |
 | `--radio-estrato` | 400 | Radio del envelope de estrato. **No bajarlo a 0**: el centroide de un barrio suele caer en una calle y el servicio devuelve cero manzanas |
-| `--sin-pois` | — | Omite los puntos de interés |
-| `--sin-criminalidad` | — | Omite los delitos por localidad |
 | `--cache-dir` | `data/external` | Dónde viven las respuestas cacheadas |
+
+Produce `lat_barrio`, `lon_barrio`, `distancia_centro_km`, `estrato_modal`,
+`estrato_promedio`, `estrato_dispersion`, `n_manzanas_estrato` y `match_verificado`.
+
+Se probaron además puntos de interés, jerarquía administrativa y criminalidad por
+localidad. La ablación de `notebooks/modelo_baseline.ipynb` mostró que **restan** en
+arranque en frío — los POIs bajan 0,021 de R² en arriendo — o son indistinguibles de cero,
+así que se quitaron del pipeline en vez de dejarlas "por las dudas".
 
 ## Cómo está armado el transform
 

@@ -21,27 +21,36 @@ Por qué existe esta etapa (medido en `notebooks/eda.ipynb`):
 
 Fuentes, todas públicas y cacheadas en `data/external/`:
 
-    OpenStreetMap (Overpass)   barrios, jerarquía administrativa y puntos de interés
+    OpenStreetMap (Overpass)   barrios y jerarquía administrativa
     Esri Colombia (ArcGIS)     estrato socioeconómico predominante por manzana
     Nominatim                  bounding box de cada ciudad
-    SCJ Bogotá (ArcGIS)        delitos de alto impacto por localidad
 
-El orden importa: sin el gazetteer no hay coordenada, y sin coordenada no hay estrato
-ni POIs. La criminalidad depende además de la jerarquía administrativa.
+El orden importa: sin el gazetteer no hay coordenada, y sin coordenada no hay estrato.
 
     1. Bounding box por ciudad   ->  Nominatim, una vez por ciudad
     2. Gazetteer de barrios      ->  Overpass, un request por familia de tags
     3. Match sector -> barrio    ->  exacto sobre el nombre normalizado
-    4. Jerarquía administrativa  ->  localidad y zona por contención del centroide
-    5. Estrato                   ->  ArcGIS, envelope alrededor del centroide
-    6. Puntos de interés         ->  Overpass por ciudad + conteo local con cKDTree
-    7. Criminalidad              ->  SCJ por localidad (sólo Bogotá, a prueba)
-    8. Derivadas sin red         ->  distancia al centro de la ciudad
+    4. Estrato                   ->  ArcGIS, envelope alrededor del centroide
+    5. Derivadas sin red         ->  distancia al centro de la ciudad
+
+Qué NO produce esta etapa, y por qué. Los números salen de la ablación en
+`notebooks/modelo_baseline.ipynb`, midiendo R² con GroupKFold POR BARRIO - el régimen de
+arranque en frío, que es el que se parece a producción:
+
+    puntos de interés   -0,021 en arriendo. `coordenadas + POIs` queda por DEBAJO de las
+                        coordenadas solas: no son neutros, meten ruido.
+    localidad / zona    -0,010 en arriendo y -0,020 en venta. Sobreajustan.
+    criminalidad        -0,001 / +0,003 / +0,001 / +0,000. Indistinguible de cero.
+
+Con el barrio ya conocido, las tres representaciones de la ubicación -coordenadas,
+estrato y POIs- son intercambiables (~+0,03 cada una por separado, y sumarlas no da más
+que cualquiera sola): alcanza con UNA. Recién en arranque en frío se separan, y ahí
+ganan las coordenadas (+0,072 en venta) y el estrato (+0,012 en arriendo, el único
+positivo en las dos operaciones). Por eso quedan esos dos, y nada más.
 
 Uso:
     python src/enrich.py
     python src/enrich.py --ciudades 5
-    python src/enrich.py --sin-pois --sin-criminalidad
     python src/enrich.py --sin-validar      # no falla aunque las validaciones fallen
 
 Códigos de salida:
@@ -66,7 +75,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.spatial import cKDTree
 
 # Mirrors de Overpass, medidos el 2026-09-10 con la query de barrios de Bogotá:
 #   private.coffee    57,6 s  OK   <- el más rápido, va primero
@@ -81,8 +89,6 @@ MIRRORS_OVERPASS = (
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
 ESTRATO_ARCGIS = ("https://ags.esri.co/arcgis/rest/services/LivingAtlas"
                   "/Estrato_predominante_por_manzana_2018/MapServer/0")
-CRIMEN_BOGOTA = ("https://oaiee.scj.gov.co/agc/rest/services/Tematicos_Pub"
-                 "/CifrasSCJ/MapServer/0")
 
 AGENTE = {"User-Agent": "valora-etl-pipeline/0.1 (proyecto academico; contacto via repo)"}
 PAUSA_OVERPASS_S = 5
@@ -91,7 +97,6 @@ PAUSA_ARCGIS_S = 0.3
 ESPERAS_REINTENTO = (0, 30, 90, 180)
 
 GRADO_EN_METROS = 111_320.0
-CIUDAD_CRIMEN = "bogota d.c."
 RADIO_MAX_CIUDAD_KM = 25
 # Overpass se cae con 504 por encima de cierto tamaño de consulta. Medido sobre la
 # familia `landuse=residential` de Bogotá, que es la más pesada:
@@ -362,7 +367,7 @@ def descargar_familia(ciudad, bbox, familia, filtro, directorio):
 
 
 def construir_gazetteer(ciudades, directorio):
-    """Devuelve (indice, jerarquia, cajas).
+    """Devuelve (indice, cajas).
 
     `indice` mapea (ciudad, alias) -> (lat, lon, barrio_osm), y gana el primer alias que
     aparece. Se construye INCREMENTALMENTE, descartando cada familia apenas se indexa:
@@ -375,7 +380,7 @@ def construir_gazetteer(ciudades, directorio):
     'suroriental', y 'rio negro' contra 'rionegro', que es otro municipio. Un centroide
     equivocado no es ruido: es un dato falso, y es peor que un nulo.
     """
-    indice, gruesos, cajas = {}, [], {}
+    indice, cajas = {}, {}
     for ciudad in ciudades:
         bbox = bbox_ciudad(ciudad, directorio)
         if bbox is None:
@@ -389,12 +394,11 @@ def construir_gazetteer(ciudades, directorio):
             filas, desde_cache, mosaicos = descargar_familia(
                 ciudad, bbox, familia, filtro, directorio)
             for fila in filas:
-                # El nivel 10 sí es barrio: en Bogotá son 315 que `place` no devuelve.
-                # Los niveles 8 y 9 (localidad y UPZ) son la jerarquía, no el barrio.
+                # El nivel 10 sí es barrio -en Bogotá son 315 que `place` no devuelve-
+                # y por eso la familia `administrativo` se sigue descargando: sube la
+                # cobertura. Los niveles 8 y 9 (localidad y UPZ) se descartan: como
+                # features medían -0,010 en arriendo y -0,020 en venta en arranque en frío.
                 if fila["admin_level"] in ("8", "9"):
-                    gruesos.append({k: fila[k] for k in
-                                    ("ciudad_clave", "barrio_osm", "lat_barrio",
-                                     "lon_barrio", "admin_level")})
                     continue
                 # Desempate por cercanía al centro, no por orden de llegada. El bbox de
                 # una ciudad grande se mete en los municipios vecinos: el de Bogotá toca
@@ -415,51 +419,12 @@ def construir_gazetteer(ciudades, directorio):
                      "(cache)" if desde_cache else "(red)")
             del filas
 
-    jerarquia = pd.DataFrame(gruesos, columns=["ciudad_clave", "barrio_osm", "lat_barrio",
-                                               "lon_barrio", "admin_level"])
-    return indice, jerarquia, cajas
+    return indice, cajas
 
 
 # --------------------------------------------------------------------------------------
-# 3. Geometría: proyección plana local, conteo por radio y distancias
+# 3. Geometría
 # --------------------------------------------------------------------------------------
-
-def proyectar(coordenadas, lat_referencia):
-    """(lat, lon) en grados -> (x, y) en metros, plano local.
-
-    A escala de ciudad y con radios de 1 km el error es despreciable, así que no hace
-    falta pyproj ni geopandas.
-    """
-    escala_lon = GRADO_EN_METROS * math.cos(math.radians(lat_referencia))
-    return np.column_stack([coordenadas[:, 1] * escala_lon,
-                            coordenadas[:, 0] * GRADO_EN_METROS])
-
-
-def contar_en_radio(centros, puntos, radio):
-    if len(centros) == 0 or len(puntos) == 0:
-        return np.zeros(len(centros), dtype=int)
-    referencia = float(centros[:, 0].mean())
-    arbol = cKDTree(proyectar(puntos, referencia))
-    vecinos = arbol.query_ball_point(proyectar(centros, referencia), r=radio)
-    return np.array([len(v) for v in vecinos])
-
-
-def punto_en_anillos(lon, lat, anillos):
-    """Contención punto-en-polígono por lanzamiento de rayo sobre anillos de ArcGIS.
-
-    Regla par-impar: los anillos interiores (huecos) alternan el estado y quedan
-    correctamente excluidos sin tratarlos aparte. Son 21 polígonos: no justifica shapely.
-    """
-    dentro = False
-    for anillo in anillos:
-        for i in range(len(anillo) - 1):
-            x1, y1 = anillo[i][0], anillo[i][1]
-            x2, y2 = anillo[i + 1][0], anillo[i + 1][1]
-            if (y1 > lat) != (y2 > lat):
-                corte = x1 + (lat - y1) * (x2 - x1) / (y2 - y1)
-                if lon < corte:
-                    dentro = not dentro
-    return dentro
 
 
 # --------------------------------------------------------------------------------------
@@ -476,39 +441,6 @@ def resolver_barrios(df, indice):
     df["barrio_osm"] = [r[2] if r else None for r in resueltos]
     df["match_barrio"] = ["exacto" if r else "sin_match" for r in resueltos]
     return df
-
-
-def asignar_jerarquia(barrios, jerarquia, tope_km=8.0):
-    """Localidad (nivel 8) y zona (nivel 9) de cada barrio, por centroide más cercano.
-
-    Es una APROXIMACIÓN deliberada: la contención exacta exigiría armar multipolígonos
-    desde las relaciones de OSM. Estas dos columnas entran al modelo como agrupador
-    grueso -la granularidad intermedia que al `sector` le falta-, no como dato catastral,
-    y cerca del borde entre dos localidades puede errar. El tope evita el disparate de
-    asignar una localidad que queda a 30 km.
-    """
-    barrios = barrios.copy()
-    barrios["localidad"] = None
-    barrios["zona"] = None
-    if jerarquia.empty or barrios.empty:
-        return barrios
-
-    for nivel, columna in (("8", "localidad"), ("9", "zona")):
-        for ciudad in barrios["ciudad_clave"].unique():
-            candidatos = jerarquia[(jerarquia["ciudad_clave"] == ciudad)
-                                   & (jerarquia["admin_level"] == nivel)]
-            destino = (barrios["ciudad_clave"] == ciudad).to_numpy()
-            if candidatos.empty or not destino.any():
-                continue
-            centros = barrios.loc[destino, ["lat_barrio", "lon_barrio"]].to_numpy()
-            puntos = candidatos[["lat_barrio", "lon_barrio"]].to_numpy()
-            referencia = float(centros[:, 0].mean())
-            arbol = cKDTree(proyectar(puntos, referencia))
-            distancia, posicion = arbol.query(proyectar(centros, referencia))
-            nombres = candidatos["barrio_osm"].to_numpy()
-            barrios.loc[destino, columna] = np.where(
-                distancia <= tope_km * 1000, nombres[posicion], None)
-    return barrios
 
 
 # --------------------------------------------------------------------------------------
@@ -583,175 +515,6 @@ def agregar_estrato(barrios, radio_m, directorio):
 
 
 # --------------------------------------------------------------------------------------
-# 6. Puntos de interés
-# --------------------------------------------------------------------------------------
-
-# Los nombres de columna terminan en `_sector` porque es la unidad que el anuncio
-# declara; el conteo se hace alrededor del centroide del barrio que matcheó.
-CATEGORIAS_POI = {
-    "n_parques_sector": ('["leisure"="park"]',),
-    "n_estaciones_transporte": ('["public_transport"="station"]', '["highway"="bus_stop"]'),
-    "n_bancos_sector": ('["amenity"="bank"]',),
-    "n_supermercados_sector": ('["shop"~"^(supermarket|convenience)$"]',),
-    "n_restaurantes_sector": ('["amenity"~"^(restaurant|cafe)$"]',),
-    "n_colegios_sector": ('["amenity"~"^(school|kindergarten)$"]',),
-    "n_salud_sector": ('["amenity"~"^(hospital|clinic|pharmacy)$"]',),
-}
-
-
-def categorias_de(etiquetas):
-    """A qué categorías pertenece un elemento de OSM (puede ser más de una)."""
-    amenidad, tienda = etiquetas.get("amenity"), etiquetas.get("shop")
-    encontradas = []
-    if etiquetas.get("leisure") == "park":
-        encontradas.append("n_parques_sector")
-    if etiquetas.get("public_transport") == "station" or etiquetas.get("highway") == "bus_stop":
-        encontradas.append("n_estaciones_transporte")
-    if amenidad == "bank":
-        encontradas.append("n_bancos_sector")
-    if tienda in ("supermarket", "convenience"):
-        encontradas.append("n_supermercados_sector")
-    if amenidad in ("restaurant", "cafe"):
-        encontradas.append("n_restaurantes_sector")
-    if amenidad in ("school", "kindergarten"):
-        encontradas.append("n_colegios_sector")
-    if amenidad in ("hospital", "clinic", "pharmacy"):
-        encontradas.append("n_salud_sector")
-    return encontradas
-
-
-def descargar_pois_ciudad(ciudad, bbox, directorio):
-    """UN request por ciudad con todos los POIs del bbox.
-
-    El enfoque obvio -una query `around:` por barrio- se midió y no escala: 41,8 s por
-    barrio por ~500 barrios son casi 6 horas, más el riesgo de que el mirror corte por
-    abuso. Bajando la ciudad entera, el conteo por radio se resuelve local con un
-    KD-tree en milisegundos.
-    """
-    # Todas las categorías en una sola consulta por mosaico, no una consulta por
-    # categoría: Bogotá pasa de 32 requests a 4.
-    todos_los_filtros = [filtro for filtros in CATEGORIAS_POI.values() for filtro in filtros]
-    apodo = f"pois_{normalizar(ciudad).replace(' ', '_')}"
-    elementos, desde_cache, mosaicos = elementos_de_bbox(
-        bbox, todos_los_filtros, directorio, apodo, salida="out tags center;")
-
-    filas = []
-    for elemento in elementos:
-        centro = elemento.get("center", elemento)
-        if centro.get("lat") is None:
-            continue
-        for categoria in categorias_de(elemento.get("tags", {})):
-            filas.append({"categoria": categoria,
-                          "lat": float(centro["lat"]), "lon": float(centro["lon"])})
-
-    log.info("  %-22s %6d POIs en %d mosaico(s) %s",
-             ciudad, len(filas), mosaicos, "(cache)" if desde_cache else "(red)")
-    return pd.DataFrame(filas, columns=["categoria", "lat", "lon"]).drop_duplicates()
-
-
-def agregar_pois(barrios, cajas, radio_m, directorio):
-    barrios = barrios.copy()
-    for categoria in CATEGORIAS_POI:
-        barrios[categoria] = 0
-
-    for ciudad, bbox in cajas.items():
-        destino = (barrios["ciudad_clave"] == ciudad).to_numpy()
-        if not destino.any():
-            continue
-        pois = descargar_pois_ciudad(ciudad, bbox, directorio)
-        centros = barrios.loc[destino, ["lat_barrio", "lon_barrio"]].to_numpy()
-        for categoria in CATEGORIAS_POI:
-            puntos = pois.loc[pois["categoria"] == categoria, ["lat", "lon"]].to_numpy()
-            barrios.loc[destino, categoria] = contar_en_radio(centros, puntos, radio_m)
-
-    barrios["n_pois_total"] = barrios[list(CATEGORIAS_POI)].sum(axis=1)
-    return barrios
-
-
-# --------------------------------------------------------------------------------------
-# 7. Criminalidad por localidad - sólo Bogotá, y a prueba
-# --------------------------------------------------------------------------------------
-
-# PROVISIONAL. La Policía Nacional sólo publica a nivel municipio (campos verificados:
-# departamento, municipio, codigo_dane, ... sin coordenadas), y una tasa municipal es
-# una función monótona de `ciudad_clave`, que el modelo ya tiene: información nueva ~0.
-# Bogotá sí publica por localidad, pero son 20 unidades sobre el 30 % de la data, contra
-# unos POIs que a nivel barrio (684 valores) midieron +0,000 / +0,004.
-# Se implementa para que lo decida la ablación, no la intuición. Si no aporta, esta
-# sección se BORRA - no se deja código muerto "por las dudas".
-ANIO_CRIMEN = "25"
-
-
-def descargar_criminalidad(directorio):
-    """Las 20 localidades de Bogotá con su geometría y sus conteos de delito."""
-    parametros = {
-        "where": "1=1",
-        "outFields": f"CMNOMLOCAL,CMH{ANIO_CRIMEN}CONT,CMLP{ANIO_CRIMEN}CONT",
-        "returnGeometry": "true",
-        "outSR": "4326",
-    }
-    features, desde_cache = consultar_arcgis(
-        CRIMEN_BOGOTA, parametros, directorio, "crimen_bogota")
-    log.info("  criminalidad Bogotá: %d localidades %s",
-             len(features), "(cache)" if desde_cache else "(red)")
-
-    localidades = []
-    for feature in features:
-        atributos = feature.get("attributes", {})
-        anillos = feature.get("geometry", {}).get("rings")
-        if not anillos or not atributos.get("CMNOMLOCAL"):
-            continue
-        localidades.append({
-            "nombre": atributos["CMNOMLOCAL"],
-            "anillos": anillos,
-            "homicidios": atributos.get(f"CMH{ANIO_CRIMEN}CONT"),
-            "lesiones": atributos.get(f"CMLP{ANIO_CRIMEN}CONT"),
-        })
-    return localidades
-
-
-def agregar_criminalidad(barrios, directorio):
-    """Une por CONTENCIÓN del centroide, no por nombre.
-
-    Se podría unir contra la columna `localidad` del paso de jerarquía, pero esa es
-    aproximada (centroide más cercano) y arrastrar su error hasta acá sería acumular dos
-    aproximaciones. Con los polígonos del propio servicio la asignación es exacta.
-    """
-    barrios = barrios.copy()
-    for columna in ("homicidios_localidad", "lesiones_localidad",
-                    "tasa_homicidio_localidad", "localidad_crimen"):
-        barrios[columna] = np.nan if columna != "localidad_crimen" else None
-
-    destino = (barrios["ciudad_clave"] == CIUDAD_CRIMEN).to_numpy()
-    if not destino.any():
-        log.info("  criminalidad: ninguna fila de %s en el recorte", CIUDAD_CRIMEN)
-        return barrios
-
-    localidades = descargar_criminalidad(directorio)
-    if not localidades:
-        return barrios
-    total_homicidios = sum(loc["homicidios"] or 0 for loc in localidades)
-
-    indices = barrios.index[destino]
-    for indice in indices:
-        lat = barrios.at[indice, "lat_barrio"]
-        lon = barrios.at[indice, "lon_barrio"]
-        for localidad in localidades:
-            if punto_en_anillos(lon, lat, localidad["anillos"]):
-                barrios.at[indice, "localidad_crimen"] = localidad["nombre"]
-                barrios.at[indice, "homicidios_localidad"] = localidad["homicidios"]
-                barrios.at[indice, "lesiones_localidad"] = localidad["lesiones"]
-                if total_homicidios:
-                    barrios.at[indice, "tasa_homicidio_localidad"] = round(
-                        (localidad["homicidios"] or 0) / total_homicidios * 100, 4)
-                break
-    cubiertos = barrios.loc[destino, "localidad_crimen"].notna().sum()
-    log.info("  criminalidad: %d/%d barrios de %s con localidad asignada",
-             int(cubiertos), int(destino.sum()), CIUDAD_CRIMEN)
-    return barrios
-
-
-# --------------------------------------------------------------------------------------
 # 8. Derivadas sin red
 # --------------------------------------------------------------------------------------
 
@@ -781,12 +544,8 @@ def distancia_km(lat1, lon1, lat2, lon2):
 # 9. Orquestación del enriquecimiento
 # --------------------------------------------------------------------------------------
 
-COLUMNAS_BARRIO = ["barrio_osm", "localidad", "zona", "estrato_modal", "estrato_promedio",
-                   "estrato_dispersion", "n_manzanas_estrato", "match_verificado",
-                   "distancia_centro_km"]
-COLUMNAS_POI = list(CATEGORIAS_POI) + ["n_pois_total"]
-COLUMNAS_CRIMEN = ["localidad_crimen", "homicidios_localidad", "lesiones_localidad",
-                   "tasa_homicidio_localidad"]
+COLUMNAS_BARRIO = ["barrio_osm", "estrato_modal", "estrato_promedio", "estrato_dispersion",
+                   "n_manzanas_estrato", "match_verificado", "distancia_centro_km"]
 
 
 def ciudades_principales(df, cuantas):
@@ -805,9 +564,9 @@ def enriquecer(df, args, directorio):
              len(ciudades), f"{cubiertas.mean() * 100:.1f} %")
 
     log.info("Descargando gazetteer de OpenStreetMap:")
-    indice, jerarquia, cajas = construir_gazetteer(ciudades, directorio)
-    log.info("Gazetteer: %s nombres indexados, %s unidades administrativas, %d ciudades",
-             f"{len(indice):,}", f"{len(jerarquia):,}", len(cajas))
+    indice, cajas = construir_gazetteer(ciudades, directorio)
+    log.info("Gazetteer: %s nombres indexados en %d ciudades",
+             f"{len(indice):,}", len(cajas))
 
     df = resolver_barrios(df, indice)
 
@@ -817,7 +576,7 @@ def enriquecer(df, args, directorio):
                      ["ciudad_clave", "barrio_osm", "lat_barrio", "lon_barrio"]]
               .drop_duplicates().reset_index(drop=True))
 
-    # El índice ya cumplió: de acá en adelante sólo se usan `usados` y `jerarquia`.
+    # El índice ya cumplió: de acá en adelante sólo se usa `usados`.
     del indice
     gc.collect()
     log.info("Barrios efectivamente usados por algún anuncio: %s", f"{len(usados):,}")
@@ -826,27 +585,10 @@ def enriquecer(df, args, directorio):
         log.warning("Ningún anuncio matcheó con un barrio: no hay nada que enriquecer")
         return df.drop(columns=["sector_norm"]), usados
 
-    usados = asignar_jerarquia(usados, jerarquia)
     usados = agregar_distancia_centro(usados, cajas)
 
     log.info("Consultando estrato socioeconómico (envelope de %d m):", args.radio_estrato)
     usados = agregar_estrato(usados, args.radio_estrato, directorio)
-
-    if args.sin_pois:
-        log.info("--sin-pois activo: se omiten los puntos de interés")
-        for columna in COLUMNAS_POI:
-            usados[columna] = np.nan
-    else:
-        log.info("Descargando puntos de interés (radio de %d m):", args.radio_poi)
-        usados = agregar_pois(usados, cajas, args.radio_poi, directorio)
-
-    if args.sin_criminalidad:
-        log.info("--sin-criminalidad activo: se omite el bloque de delitos")
-        for columna in COLUMNAS_CRIMEN:
-            usados[columna] = np.nan if columna != "localidad_crimen" else None
-    else:
-        log.info("Consultando criminalidad por localidad:")
-        usados = agregar_criminalidad(usados, directorio)
 
     # El match verificado contra el MPIO de las manzanas es la última compuerta: si el
     # barrio cayó en otro municipio, se descarta la coordenada entera en vez de propagar
@@ -859,8 +601,7 @@ def enriquecer(df, args, directorio):
     enriquecido = df.merge(usados.drop(columns=["barrio_osm"]),
                            on=["ciudad_clave", "lat_barrio", "lon_barrio"], how="left")
     sospechoso = enriquecido["match_verificado"].eq(False)
-    columnas_a_anular = (["lat_barrio", "lon_barrio", "barrio_osm"]
-                         + COLUMNAS_BARRIO[:-1] + COLUMNAS_POI + COLUMNAS_CRIMEN)
+    columnas_a_anular = ["lat_barrio", "lon_barrio", "barrio_osm"] + COLUMNAS_BARRIO
     for columna in columnas_a_anular:
         if columna in enriquecido.columns:
             enriquecido.loc[sospechoso, columna] = np.nan
@@ -956,11 +697,9 @@ def exportar(enriquecido, usados, directorio, ciudades):
         "con_estrato_%": round(enriquecido["estrato_modal"].notna().mean() * 100, 2),
         "estrato_distribucion": (enriquecido["estrato_modal"].dropna().astype(int)
                                  .value_counts().sort_index().to_dict()),
-        "con_criminalidad_%": round(
-            enriquecido["tasa_homicidio_localidad"].notna().mean() * 100, 2),
         "nulos_por_columna_nueva_%": {
             columna: round(enriquecido[columna].isna().mean() * 100, 2)
-            for columna in COLUMNAS_BARRIO + COLUMNAS_POI + COLUMNAS_CRIMEN
+            for columna in COLUMNAS_BARRIO
             if columna in enriquecido.columns},
     }
     ruta = directorio / "enrich_resumen.json"
@@ -984,14 +723,8 @@ def parse_args():
                         help="Carpeta del caché de respuestas externas")
     parser.add_argument("--ciudades", type=int, default=15,
                         help="Cuántas ciudades enriquecer, por volumen de anuncios")
-    parser.add_argument("--radio-poi", type=int, default=1000,
-                        help="Radio en metros para contar puntos de interés")
     parser.add_argument("--radio-estrato", type=int, default=400,
                         help="Radio en metros del envelope de estrato")
-    parser.add_argument("--sin-pois", action="store_true",
-                        help="Omite los puntos de interés")
-    parser.add_argument("--sin-criminalidad", action="store_true",
-                        help="Omite el bloque de delitos por localidad")
     parser.add_argument("--sin-validar", action="store_true",
                         help="Escribe la salida aunque las validaciones fallen")
     return parser.parse_args()
