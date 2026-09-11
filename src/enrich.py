@@ -1,41 +1,37 @@
-"""Enriquecimiento geoespacial de los anuncios - tercera etapa (Enrich) del flujo ETL.
+"""Enriquecimiento geoespacial de los anuncios - cuarta etapa (Enrich) del flujo ETL.
 
-Lee el stage limpio que dejó `transform.py` y le agrega el contexto del barrio, que es
-la información que más le falta al modelo de precio:
+Lee el stage limpio que dejó `transform.py` y deja a cada anuncio con una coordenada,
+un estrato y su distancia al centro de la ciudad, diciendo de dónde salió cada dato:
 
-    anuncios_enriquecido.{csv,parquet}   stage limpio + columnas de ubicación
-    enrich_resumen.json                  cobertura y salud de la corrida
+    anuncios_enriquecido.{csv,parquet}   stage limpio + ubicación resuelta
+    enrich_resumen.json                  cobertura por origen y salud de la corrida
 
-Por qué existe esta etapa (medido en `notebooks/eda.ipynb`):
+Por qué la ubicación (medido en `notebooks/03_eda_modelado.ipynb`):
 
-    De las cinco features del stage limpio sólo unas dos aportan información
-    independiente - `banos` y `habitaciones` correlacionan 0,84 y 0,82 con el área, o
-    sea que son proxies del tamaño. La ubicación es la señal grande que falta, pero
-    `sector` es un string de 7.001 valores únicos con 3.948 sectores de UNA fila: da
-    R² 0,638 dentro de muestra y 0,320 fuera. Memoriza, no aprende.
+    De las cinco features de la tarjeta sólo unas dos aportan información independiente
+    - `banos` y `habitaciones` correlacionan 0,84 y 0,82 con el área. La ubicación es la
+    señal grande, pero `sector` es un string de 7.001 valores con 3.948 sectores de UNA
+    fila: R² 0,638 dentro de muestra y 0,320 fuera. Memoriza, no aprende. La salida es
+    convertirla en variables NUMÉRICAS Y DENSAS: coordenada y estrato.
 
-    La salida no es limpiar mejor el string, es convertir la ubicación en variables
-    NUMÉRICAS Y DENSAS - coordenadas, estrato, jerarquía administrativa - donde miles
-    de sectores colapsan en pocas dimensiones que sí generalizan. El prototipo midió
-    +0,041 de R² en arriendo y +0,034 en venta sólo por agregar lat/lon.
+De dónde sale la coordenada, en cascada. El primer escalón resuelve casi todo desde que
+existe la etapa `detail`; los otros dos son el respaldo para lo que el anuncio no trae:
 
-Fuentes, todas públicas y cacheadas en `data/external/`:
+    1. anuncio          la coordenada que publica el propio anuncio (detail.py)
+    2. sector_propio    mediana de las coordenadas de los OTROS anuncios del mismo
+                        sector: el mejor gazetteer posible, porque usa los nombres tal
+                        como los escriben los anunciantes, y no cuesta un request
+    3. barrio_osm       gazetteer de OpenStreetMap (Overpass + Nominatim), verificado
+                        contra el municipio de las manzanas de Esri Colombia
 
-    OpenStreetMap (Overpass)   barrios y jerarquía administrativa
-    Esri Colombia (ArcGIS)     estrato socioeconómico predominante por manzana
-    Nominatim                  bounding box de cada ciudad
-
-El orden importa: sin el gazetteer no hay coordenada, y sin coordenada no hay estrato.
-
-    1. Bounding box por ciudad   ->  Nominatim, una vez por ciudad
-    2. Gazetteer de barrios      ->  Overpass, un request por familia de tags
-    3. Match sector -> barrio    ->  exacto sobre el nombre normalizado
-    4. Estrato                   ->  ArcGIS, envelope alrededor del centroide
-    5. Derivadas sin red         ->  distancia al centro de la ciudad
+El estrato sigue la misma lógica: el del anuncio manda y, si falta, entra el estrato
+predominante del barrio según las manzanas de Esri (`estrato_modal`). Ambas columnas
+viajan con su `origen_*` para que el modelo y el resumen sepan qué tan confiable es
+cada fila. Todas las respuestas de red quedan cacheadas en `data/external/`.
 
 Qué NO produce esta etapa, y por qué. Los números salen de la ablación en
-`notebooks/modelo_baseline.ipynb`, midiendo R² con GroupKFold POR BARRIO - el régimen de
-arranque en frío, que es el que se parece a producción:
+`notebooks/04_ablacion_features.ipynb`, midiendo R² con GroupKFold POR BARRIO - el
+régimen de arranque en frío, que es el que se parece a producción:
 
     puntos de interés   -0,021 en arriendo. `coordenadas + POIs` queda por DEBAJO de las
                         coordenadas solas: no son neutros, meten ruido.
@@ -48,9 +44,17 @@ que cualquiera sola): alcanza con UNA. Recién en arranque en frío se separan, 
 ganan las coordenadas (+0,072 en venta) y el estrato (+0,012 en arriendo, el único
 positivo en las dos operaciones). Por eso quedan esos dos, y nada más.
 
+Y el respaldo OSM/Esri está APAGADO por defecto (`--con-osm` lo enciende). La Parte B de
+esa misma ablación, ya con el detalle, lo midió cara a cara: sumado a la coordenada y al
+estrato del propio anuncio aporta +0,002 de R² como máximo, y en arranque en frío el
+estrato modal solo RESTA (-0,002 / -0,003). Rescata 72 coordenadas y 233 estratos de
+44.836 filas (0,7 %) a cambio de una o dos horas de red en cada máquina nueva. Sin él,
+esta etapa corre en segundos y sin conexión.
+
 Uso:
     python src/enrich.py
-    python src/enrich.py --ciudades 5
+    python src/enrich.py --con-osm          # además, el respaldo OpenStreetMap + Esri
+    python src/enrich.py --con-osm --ciudades 5
     python src/enrich.py --sin-validar      # no falla aunque las validaciones fallen
 
 Códigos de salida:
@@ -533,26 +537,110 @@ def agregar_estrato(barrios, radio_m, directorio):
 # 8. Derivadas sin red
 # --------------------------------------------------------------------------------------
 
-def agregar_distancia_centro(barrios, cajas):
-    """Distancia del barrio al centro de su ciudad. Proxy barato de centralidad, y no
-    cuesta un solo request: el centro sale del bounding box que ya se descargó."""
-    barrios = barrios.copy()
-    barrios["distancia_centro_km"] = np.nan
-    for ciudad, (sur, oeste, norte, este) in cajas.items():
-        destino = barrios["ciudad_clave"] == ciudad
-        if not destino.any():
-            continue
-        centro_lat, centro_lon = (sur + norte) / 2, (oeste + este) / 2
-        barrios.loc[destino, "distancia_centro_km"] = [
-            round(distancia_km(centro_lat, centro_lon, lat, lon), 3)
-            for lat, lon in zip(barrios.loc[destino, "lat_barrio"],
-                                barrios.loc[destino, "lon_barrio"])]
-    return barrios
-
-
 def distancia_km(lat1, lon1, lat2, lon2):
     escala_lon = math.cos(math.radians(lat1)) * 111.32
     return math.hypot((lat2 - lat1) * 111.32, (lon2 - lon1) * escala_lon)
+
+
+def distancia_km_vector(lat1, lon1, lat2, lon2):
+    """La misma proyección plana que distancia_km, vectorizada para 50.000 filas."""
+    lat1, lon1, lat2, lon2 = (np.asarray(x, dtype="float64") for x in (lat1, lon1, lat2, lon2))
+    escala_lon = np.cos(np.radians(lat1)) * 111.32
+    return np.hypot((lat2 - lat1) * 111.32, (lon2 - lon1) * escala_lon)
+
+
+# --------------------------------------------------------------------------------------
+# 8b. Gazetteer interno y coordenada final
+# --------------------------------------------------------------------------------------
+
+# Mínimo de anuncios con coordenada exacta para que la mediana de un sector sea un
+# centroide creíble. Con menos, un solo anuncio mal ubicado arrastra a los demás.
+N_MINIMO_SECTOR = 3
+N_MINIMO_CIUDAD = 10
+# Una coordenada a más de esto del centro de su ciudad no es de esa ciudad: el anuncio
+# dice Bogotá y el punto cae en Medellín. Se anula antes de que contamine las medianas.
+RADIO_MAX_DESDE_CENTRO_KM = 60
+
+
+def centros_de_ciudad(df, cajas):
+    """Centro de cada ciudad: la mediana de las coordenadas de sus anuncios (con al menos
+    N_MINIMO_CIUDAD) y, si no alcanza, el centro del bbox de Nominatim. La mediana es
+    robusta a los pocos anuncios mal ubicados, que se anulan recién después."""
+    con_anuncio = df[df["origen_coordenada"].eq("anuncio")]
+    medianas = (con_anuncio.groupby("ciudad_clave")
+                           .agg(lat=("lat", "median"), lon=("lon", "median"), n=("lat", "size")))
+    centros = {ciudad: (float(fila.lat), float(fila.lon))
+               for ciudad, fila in medianas.iterrows() if fila.n >= N_MINIMO_CIUDAD}
+    for ciudad, (sur, oeste, norte, este) in cajas.items():
+        centros.setdefault(ciudad, ((sur + norte) / 2, (oeste + este) / 2))
+    return centros
+
+
+def anular_coordenadas_lejanas(df, centros):
+    lat_centro = df["ciudad_clave"].map(lambda c: centros.get(c, (np.nan, np.nan))[0])
+    lon_centro = df["ciudad_clave"].map(lambda c: centros.get(c, (np.nan, np.nan))[1])
+    distancia = distancia_km_vector(lat_centro, lon_centro,
+                                    df["lat"].astype("float64"), df["lon"].astype("float64"))
+    lejana = pd.Series(distancia > RADIO_MAX_DESDE_CENTRO_KM, index=df.index) & df["lat"].notna()
+    df["coordenada_lejana"] = lejana.astype(bool)
+    df.loc[lejana, ["lat", "lon"]] = pd.NA
+    df.loc[lejana, "origen_coordenada"] = "ninguna"
+    if lejana.any():
+        log.warning("  %d anuncios con coordenada a más de %d km del centro de su ciudad: "
+                    "se anula", int(lejana.sum()), RADIO_MAX_DESDE_CENTRO_KM)
+    return df
+
+
+def construir_gazetteer_interno(df):
+    """Mediana de lat/lon por (ciudad, sector) sobre los anuncios con coordenada exacta.
+    Un sector con N_MINIMO_SECTOR o más anuncios geolocalizados le presta su centroide a
+    los vecinos que no traen coordenada."""
+    exacta = (df["origen_coordenada"].eq("anuncio")
+              & ~df["ubicacion_aproximada"].fillna(False).astype(bool)
+              & df["sector_norm"].ne(""))
+    base = df.loc[exacta, ["ciudad_clave", "sector_norm", "lat", "lon"]].astype(
+        {"lat": "float64", "lon": "float64"})
+    sectores = (base.groupby(["ciudad_clave", "sector_norm"])
+                    .agg(lat_sector=("lat", "median"), lon_sector=("lon", "median"),
+                         n_sector=("lat", "size"))
+                    .reset_index())
+    return sectores[sectores["n_sector"] >= N_MINIMO_SECTOR].reset_index(drop=True)
+
+
+def completar_coordenadas(df, sectores):
+    """Rellena lat/lon en cascada: anuncio -> sector propio -> barrio OSM, anotando el
+    origen. Las filas que ya tienen coordenada no se tocan."""
+    df = df.merge(sectores, on=["ciudad_clave", "sector_norm"], how="left",
+                  validate="many_to_one")
+    por_sector = df["lat"].isna() & df["lat_sector"].notna()
+    df.loc[por_sector, "lat"] = df.loc[por_sector, "lat_sector"]
+    df.loc[por_sector, "lon"] = df.loc[por_sector, "lon_sector"]
+    df.loc[por_sector, "origen_coordenada"] = "sector_propio"
+    por_osm = df["lat"].isna() & df["lat_barrio"].notna()
+    df.loc[por_osm, "lat"] = df.loc[por_osm, "lat_barrio"]
+    df.loc[por_osm, "lon"] = df.loc[por_osm, "lon_barrio"]
+    df.loc[por_osm, "origen_coordenada"] = "barrio_osm"
+    return df.drop(columns=["lat_sector", "lon_sector", "n_sector"])
+
+
+def agregar_distancia_centro(df, centros):
+    """Distancia de la coordenada final al centro de su ciudad. Proxy barato de
+    centralidad, sin un solo request."""
+    lat_centro = df["ciudad_clave"].map(lambda c: centros.get(c, (np.nan, np.nan))[0])
+    lon_centro = df["ciudad_clave"].map(lambda c: centros.get(c, (np.nan, np.nan))[1])
+    distancia = distancia_km_vector(lat_centro, lon_centro,
+                                    df["lat"].astype("float64"), df["lon"].astype("float64"))
+    df["distancia_centro_km"] = np.round(distancia, 3)
+    return df
+
+
+def completar_estrato(df):
+    """El estrato del anuncio manda; si falta, entra el modal del barrio OSM."""
+    df["origen_estrato"] = np.where(df["estrato"].notna(), "anuncio", "ninguno")
+    por_barrio = df["estrato"].isna() & df["estrato_modal"].notna()
+    df.loc[por_barrio, "estrato"] = df.loc[por_barrio, "estrato_modal"].round().astype("Int8")
+    df.loc[por_barrio, "origen_estrato"] = "barrio_osm"
+    return df
 
 
 # --------------------------------------------------------------------------------------
@@ -569,15 +657,10 @@ def ciudades_principales(df, cuantas):
     return list(df["ciudad_clave"].value_counts().head(cuantas).index)
 
 
-def enriquecer(df, args, directorio):
-    """Aplica el flujo completo. Devuelve (enriquecido, barrios_usados)."""
-    df = df.copy()
-    df["sector_norm"] = df["sector_clave"].map(normalizar)
-    ciudades = ciudades_principales(df, args.ciudades)
-    cubiertas = df["ciudad_clave"].isin(ciudades)
-    log.info("Ciudades a enriquecer: %d (%s de las filas)",
-             len(ciudades), f"{cubiertas.mean() * 100:.1f} %")
-
+def resolver_osm(df, ciudades, radio_estrato, directorio):
+    """El gazetteer de OpenStreetMap y el estrato de Esri, por barrio. Devuelve el
+    DataFrame con las columnas `*_barrio`, `barrio_osm`, `match_barrio` y las de
+    estrato modal, más los barrios usados y los bbox por ciudad."""
     log.info("Descargando gazetteer de OpenStreetMap:")
     indice, cajas = construir_gazetteer(ciudades, directorio)
     log.info("Gazetteer: %s nombres indexados en %d ciudades",
@@ -597,13 +680,14 @@ def enriquecer(df, args, directorio):
     log.info("Barrios efectivamente usados por algún anuncio: %s", f"{len(usados):,}")
 
     if usados.empty:
-        log.warning("Ningún anuncio matcheó con un barrio: no hay nada que enriquecer")
-        return df.drop(columns=["sector_norm"]), usados
+        log.warning("Ningún anuncio matcheó con un barrio de OSM")
+        for columna in COLUMNAS_BARRIO:
+            if columna not in df.columns:
+                df[columna] = np.nan
+        return df, usados, cajas
 
-    usados = agregar_distancia_centro(usados, cajas)
-
-    log.info("Consultando estrato socioeconómico (envelope de %d m):", args.radio_estrato)
-    usados = agregar_estrato(usados, args.radio_estrato, directorio)
+    log.info("Consultando estrato socioeconómico (envelope de %d m):", radio_estrato)
+    usados = agregar_estrato(usados, radio_estrato, directorio)
 
     # El match verificado contra el MPIO de las manzanas es la última compuerta: si el
     # barrio cayó en otro municipio, se descarta la coordenada entera en vez de propagar
@@ -613,16 +697,65 @@ def enriquecer(df, args, directorio):
         log.warning("  %d barrios cayeron en otro municipio: se les quita la coordenada",
                     int(falsos))
 
-    enriquecido = df.merge(usados.drop(columns=["barrio_osm"]),
-                           on=["ciudad_clave", "lat_barrio", "lon_barrio"], how="left")
+    # Dos elementos de OSM con nombre distinto pueden compartir centroide exacto (el nodo
+    # `place` puesto sobre el centro del polígono administrativo): la llave del merge es
+    # la coordenada, así que se deja una sola fila por coordenada y se valida que el
+    # merge no multiplique anuncios.
+    por_coordenada = usados.drop(columns=["barrio_osm"]).drop_duplicates(
+        subset=["ciudad_clave", "lat_barrio", "lon_barrio"])
+    enriquecido = df.merge(por_coordenada, on=["ciudad_clave", "lat_barrio", "lon_barrio"],
+                           how="left", validate="many_to_one")
     sospechoso = enriquecido["match_verificado"].eq(False)
     columnas_a_anular = ["lat_barrio", "lon_barrio", "barrio_osm"] + COLUMNAS_BARRIO
     for columna in columnas_a_anular:
         if columna in enriquecido.columns:
             enriquecido.loc[sospechoso, columna] = np.nan
     enriquecido.loc[sospechoso, "match_barrio"] = "descartado_por_municipio"
+    return enriquecido, usados, cajas
 
-    return enriquecido.drop(columns=["sector_norm"]), usados
+
+def sin_osm(df):
+    """Las mismas columnas que deja el respaldo OSM, vacías: el esquema del gold no
+    depende de si se encendió `--con-osm` o no."""
+    df = df.copy()
+    for columna in ("lat_barrio", "lon_barrio") + tuple(COLUMNAS_BARRIO):
+        df[columna] = np.nan
+    df["barrio_osm"] = None
+    df["match_barrio"] = "no_consultado"
+    usados = pd.DataFrame(columns=["ciudad_clave", "barrio_osm", "lat_barrio", "lon_barrio"])
+    return df, usados, {}
+
+
+def enriquecer(df, args, directorio):
+    """Aplica el flujo completo. Devuelve (enriquecido, barrios_osm_usados, sectores)."""
+    df = df.copy()
+    df["sector_norm"] = df["sector_clave"].map(normalizar)
+    df["origen_coordenada"] = np.where(df["lat"].notna(), "anuncio", "ninguna")
+    log.info("Coordenada publicada por el anuncio: %s de %s filas (%.1f %%)",
+             f"{int(df['lat'].notna().sum()):,}", f"{len(df):,}", df["lat"].notna().mean() * 100)
+
+    if args.con_osm:
+        ciudades = ciudades_principales(df, args.ciudades)
+        cubiertas = df["ciudad_clave"].isin(ciudades)
+        log.info("Ciudades con gazetteer OSM de respaldo: %d (%s de las filas)",
+                 len(ciudades), f"{cubiertas.mean() * 100:.1f} %")
+        df, usados, cajas = resolver_osm(df, ciudades, args.radio_estrato, directorio)
+    else:
+        log.info("Respaldo OSM/Esri apagado (--con-osm lo enciende): sin red")
+        df, usados, cajas = sin_osm(df)
+
+    log.info("Coordenada final, en cascada:")
+    centros = centros_de_ciudad(df, cajas)
+    df = anular_coordenadas_lejanas(df, centros)
+    sectores = construir_gazetteer_interno(df)
+    log.info("  gazetteer interno: %s sectores con al menos %d anuncios geolocalizados",
+             f"{len(sectores):,}", N_MINIMO_SECTOR)
+    df = completar_coordenadas(df, sectores)
+    df = agregar_distancia_centro(df, centros)
+    df = completar_estrato(df)
+    log.info("  coordenada por origen: %s", df["origen_coordenada"].value_counts().to_dict())
+    log.info("  estrato por origen:    %s", df["origen_estrato"].value_counts().to_dict())
+    return df.drop(columns=["sector_norm"]), usados, sectores
 
 
 # --------------------------------------------------------------------------------------
@@ -654,21 +787,40 @@ def validar(original, enriquecido):
         revisar(enriquecido[columna].notna().all(),
                 f"'{columna}' sigue sin nulos tras el merge")
 
-    log.info("Coherencia de las columnas nuevas:")
-    con_coordenada = enriquecido["lat_barrio"].notna()
+    log.info("Coherencia de la coordenada final:")
+    con_coordenada = enriquecido["lat"].notna()
     revisar(con_coordenada.any(), "Al menos un anuncio quedó con coordenada")
-    revisar(enriquecido.loc[con_coordenada, "lat_barrio"].between(-4.3, 13.5).all(),
-            "Toda latitud cae dentro de Colombia")
-    revisar(enriquecido.loc[con_coordenada, "lon_barrio"].between(-82.0, -66.8).all(),
-            "Toda longitud cae dentro de Colombia")
+    revisar(con_coordenada.eq(enriquecido["lon"].notna()).all(),
+            "lat y lon van juntas: nunca una sin la otra")
+    revisar(enriquecido.loc[con_coordenada, "lat"].between(-4.3, 13.6).all()
+            and enriquecido.loc[con_coordenada, "lon"].between(-82.0, -66.8).all(),
+            "Toda coordenada cae dentro de Colombia")
+    revisar(con_coordenada.eq(enriquecido["origen_coordenada"].ne("ninguna")).all(),
+            "origen_coordenada dice 'ninguna' exactamente donde no hay coordenada")
+    del_anuncio = enriquecido["origen_coordenada"].eq("anuncio")
+    revisar(np.allclose(enriquecido.loc[del_anuncio, "lat"].astype("float64"),
+                        original.loc[del_anuncio.to_numpy(), "lat"].astype("float64"))
+            and np.allclose(enriquecido.loc[del_anuncio, "lon"].astype("float64"),
+                            original.loc[del_anuncio.to_numpy(), "lon"].astype("float64")),
+            "La coordenada de origen 'anuncio' es la que publicó el anuncio, sin tocar")
+    distancias = enriquecido.loc[con_coordenada, "distancia_centro_km"].dropna()
+    revisar(distancias.empty or (distancias <= RADIO_MAX_DESDE_CENTRO_KM).all(),
+            f"Ninguna coordenada queda a más de {RADIO_MAX_DESDE_CENTRO_KM} km del centro "
+            "de su ciudad")
 
-    estratos = enriquecido["estrato_modal"].dropna()
+    log.info("Coherencia del estrato:")
+    estratos = enriquecido["estrato"].dropna()
     revisar(estratos.empty or estratos.between(1, 6).all(),
             "Todo estrato está en el rango 1-6")
-    revisar((~enriquecido["match_verificado"].eq(False) | ~con_coordenada).all(),
-            "Ningún anuncio conserva coordenada tras fallar la verificación de municipio")
-    revisar(enriquecido.loc[~con_coordenada, "estrato_modal"].isna().all(),
-            "Sin coordenada no hay estrato: no se inventó ubicación")
+    revisar(enriquecido["estrato"].notna().eq(enriquecido["origen_estrato"].ne("ninguno")).all(),
+            "origen_estrato dice 'ninguno' exactamente donde no hay estrato")
+
+    log.info("Coherencia del respaldo OSM:")
+    con_osm = enriquecido["lat_barrio"].notna()
+    revisar((~enriquecido["match_verificado"].eq(False) | ~con_osm).all(),
+            "Ningún anuncio conserva coordenada OSM tras fallar la verificación de municipio")
+    revisar(enriquecido.loc[~con_osm, "estrato_modal"].isna().all(),
+            "Sin barrio OSM no hay estrato modal: no se inventó ubicación")
     return fallas
 
 
@@ -685,36 +837,43 @@ def escribir(df, directorio, nombre):
     log.info("  %-22s %8s filas x %2d columnas", nombre, f"{len(df):,}", len(df.columns))
 
 
-def exportar(enriquecido, usados, directorio, ciudades):
+def exportar(enriquecido, usados, sectores, directorio, ciudades):
     log.info("Escribiendo el stage enriquecido en %s:", directorio)
     escribir(enriquecido, directorio, "anuncios_enriquecido")
 
-    con_coordenada = enriquecido["lat_barrio"].notna()
+    con_coordenada = enriquecido["lat"].notna()
     en_recorte = enriquecido["ciudad_clave"].isin(ciudades)
     cobertura_por_ciudad = (
-        enriquecido[en_recorte].groupby("ciudad_clave")["lat_barrio"]
+        enriquecido[en_recorte].groupby("ciudad_clave")["lat"]
         .apply(lambda s: round(s.notna().mean() * 100, 1))
         .sort_values(ascending=False).to_dict())
 
     resumen = {
         "filas": len(enriquecido),
-        "ciudades_enriquecidas": len(ciudades),
-        "filas_en_ciudades_enriquecidas": int(en_recorte.sum()),
-        "barrios_usados": len(usados),
-        # El número que decide si esta etapa sirvió. La línea base del prototipo del EDA,
-        # con sólo place=suburb|neighbourhood|quarter y 5 ciudades, fue 43,9 %.
-        "cobertura_%": round(con_coordenada.mean() * 100, 2),
-        "cobertura_en_recorte_%": round(
-            enriquecido.loc[en_recorte, "lat_barrio"].notna().mean() * 100, 2)
-        if en_recorte.any() else 0.0,
+        # Los números que deciden si esta etapa sirvió: cuántas filas terminan con
+        # coordenada y estrato, y de dónde salió cada uno.
+        "cobertura_coordenada_%": round(con_coordenada.mean() * 100, 2),
+        "coordenada_por_origen": enriquecido["origen_coordenada"].value_counts().to_dict(),
+        "coordenadas_lejanas_anuladas": int(enriquecido["coordenada_lejana"].sum()),
+        "cobertura_estrato_%": round(enriquecido["estrato"].notna().mean() * 100, 2),
+        "estrato_por_origen": enriquecido["origen_estrato"].value_counts().to_dict(),
+        "estrato_distribucion": {str(int(k)): int(v) for k, v in
+                                 enriquecido["estrato"].value_counts().sort_index().items()},
+        "sectores_gazetteer_interno": int(len(sectores)),
         "cobertura_por_ciudad_%": cobertura_por_ciudad,
-        "match": enriquecido["match_barrio"].value_counts().to_dict(),
-        "con_estrato_%": round(enriquecido["estrato_modal"].notna().mean() * 100, 2),
-        "estrato_distribucion": (enriquecido["estrato_modal"].dropna().astype(int)
-                                 .value_counts().sort_index().to_dict()),
+        # El respaldo de OpenStreetMap, para saber cuánto sigue aportando
+        "osm": {
+            "activo": bool(len(usados)) or bool(enriquecido["lat_barrio"].notna().any()),
+            "ciudades": len(ciudades),
+            "filas_en_ciudades": int(en_recorte.sum()),
+            "barrios_usados": len(usados),
+            "match": enriquecido["match_barrio"].value_counts().to_dict(),
+            "cobertura_lat_barrio_%": round(enriquecido["lat_barrio"].notna().mean() * 100, 2),
+            "con_estrato_modal_%": round(enriquecido["estrato_modal"].notna().mean() * 100, 2),
+        },
         "nulos_por_columna_nueva_%": {
             columna: round(enriquecido[columna].isna().mean() * 100, 2)
-            for columna in COLUMNAS_BARRIO
+            for columna in ["lat", "estrato", "distancia_centro_km"] + COLUMNAS_BARRIO
             if columna in enriquecido.columns},
     }
     ruta = directorio / "enrich_resumen.json"
@@ -736,10 +895,13 @@ def parse_args():
                         help="Carpeta de salida (se crea si no existe)")
     parser.add_argument("--cache-dir", default="data/external",
                         help="Carpeta del caché de respuestas externas")
+    parser.add_argument("--con-osm", action="store_true",
+                        help="Encender el respaldo OpenStreetMap + Esri (1-2 h de red la "
+                             "primera vez; aporta 0,7 %% de cobertura extra)")
     parser.add_argument("--ciudades", type=int, default=15,
-                        help="Cuántas ciudades enriquecer, por volumen de anuncios")
+                        help="Con --con-osm: cuántas ciudades consultar, por volumen de anuncios")
     parser.add_argument("--radio-estrato", type=int, default=400,
-                        help="Radio en metros del envelope de estrato")
+                        help="Con --con-osm: radio en metros del envelope de estrato")
     parser.add_argument("--sin-validar", action="store_true",
                         help="Escribe la salida aunque las validaciones fallen")
     return parser.parse_args()
@@ -776,8 +938,14 @@ def main():
     except ImportError:
         pass
 
+    for columna in ("lat", "lon", "estrato", "ubicacion_aproximada"):
+        if columna not in original.columns:
+            log.error("El stage limpio no tiene la columna '%s': hay que correr el transform "
+                      "con el detalle (src/detail.py) antes de enriquecer", columna)
+            return 1
+
     try:
-        enriquecido, usados = enriquecer(original, args, directorio_cache)
+        enriquecido, usados, sectores = enriquecer(original, args, directorio_cache)
     except RuntimeError as error:
         log.error("%s", error)
         return 1
@@ -786,7 +954,7 @@ def main():
     fallas = validar(original, enriquecido)
 
     ciudades = ciudades_principales(original, args.ciudades)
-    resumen = exportar(enriquecido, usados, Path(args.salida_dir), ciudades)
+    resumen = exportar(enriquecido, usados, sectores, Path(args.salida_dir), ciudades)
 
     if fallas:
         log.error("%d validaciones fallaron: %s", len(fallas), "; ".join(fallas))
@@ -794,13 +962,10 @@ def main():
             return 1
         log.warning("--sin-validar activo: se continúa pese a las fallas")
 
-    # La comparación honesta es por ciudad: el 43,9 % del prototipo del EDA era el
-    # promedio de 5 ciudades con Barranquilla al 82,9 % y Bogotá al 32,0 %. Contrastar
-    # un recorte de otro tamaño contra ese número global no dice nada.
-    log.info("Enriquecimiento completo: %s %% de cobertura global, %s %% en el recorte",
-             resumen["cobertura_%"], resumen["cobertura_en_recorte_%"])
-    log.info("Cobertura por ciudad (línea base del prototipo entre paréntesis): %s",
-             json.dumps(resumen["cobertura_por_ciudad_%"], ensure_ascii=False))
+    log.info("Enriquecimiento completo: %s %% de las filas con coordenada %s | %s %% con "
+             "estrato %s", resumen["cobertura_coordenada_%"],
+             json.dumps(resumen["coordenada_por_origen"]), resumen["cobertura_estrato_%"],
+             json.dumps(resumen["estrato_por_origen"]))
     return 0
 
 
