@@ -1,4 +1,4 @@
-# Configuración común de las tres etapas: misma imagen, mismo volumen de datos.
+# Configuración común de las etapas del ETL: misma imagen, mismo volumen de datos.
 # El ancla evita repetirla y que se desincronicen entre servicios.
 x-etl: &etl
   build: .
@@ -8,28 +8,87 @@ x-etl: &etl
   volumes:
     - ./data:/app/data
 
+# Credenciales y endpoints del lakehouse. Sólo la etapa de carga los necesita, así que van
+# en un ancla aparte en vez de ensuciar el entorno de las otras tres.
+# Son credenciales de desarrollo local, obviamente: en un despliegue real salen de secretos.
+x-lakehouse: &lakehouse
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_ACCESS_KEY: valora
+  MINIO_SECRET_KEY: valora123
+  MINIO_BUCKET: valora
+  CLICKHOUSE_HOST: clickhouse
+  CLICKHOUSE_PORT: "8123"
+  CLICKHOUSE_USER: valora
+  CLICKHOUSE_PASSWORD: valora123
+  CLICKHOUSE_DB: valora
+
 services:
-  db:
-    image: postgres:16
+  # ─────────────────────────────── Lakehouse ───────────────────────────────
+  # MinIO es el LAGO y la fuente de verdad: guarda las tres capas en Parquet.
+  # ClickHouse es el WAREHOUSE: copia el gold a tablas MergeTree para consultar rápido.
+  # La data queda en dos lugares a propósito - el lago siempre se puede reprocesar.
+  minio:
+    image: minio/minio:latest
     restart: unless-stopped
+    command: server /data --console-address ":9001"
     environment:
-      POSTGRES_USER: gpa
-      POSTGRES_PASSWORD: gpa
-      POSTGRES_DB: metrocuadrado
+      MINIO_ROOT_USER: valora
+      MINIO_ROOT_PASSWORD: valora123
     ports:
-      - "5432:5432"
+      - "9000:9000"   # API S3
+      - "9001:9001"   # consola web
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - miniodata:/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gpa -d metrocuadrado"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
+  # Contenedor efímero: crea el bucket y los prefijos de las tres capas, y se apaga.
+  # `--ignore-existing` lo hace idempotente, así que puede correr en cada `up`.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set local http://minio:9000 valora valora123 &&
+        mc mb --ignore-existing local/valora &&
+        echo "bucket valora listo"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: valora
+      CLICKHOUSE_PASSWORD: valora123
+      CLICKHOUSE_DB: valora
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "8123:8123"   # HTTP, que es por donde entra src/load.py
+      - "9002:9000"   # protocolo nativo. 9000 en el host ya lo tomó MinIO.
+    volumes:
+      - chdata:/var/lib/clickhouse
+    # ClickHouse abre muchísimos descriptores y, sin techo, se queda con toda la RAM que
+    # encuentre. 2 GB le sobran para 45.000 filas y dejan la máquina usable.
+    mem_limit: 2g
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider",
+             "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ─────────────────────────────── Etapas ETL ───────────────────────────────
   # Etapa 1 - Extract:  docker compose run --rm scraper
   # Tarda horas: son seis barridos (3 tipos x 2 operaciones) contra el sitio real.
-  # Nota: hoy nada del código usa DATABASE_URL ni la base; el servicio db queda
-  # disponible para la futura etapa de carga.
   scraper:
     <<: *etl
     command: python src/extract.py --snapshot
@@ -42,7 +101,7 @@ services:
     command: python src/transform.py
 
   # Etapa 3 - Enrich:  docker compose run --rm enrich
-  # Agrega el contexto del barrio (coordenadas, estrato, POIs) al stage limpio.
+  # Agrega el contexto del barrio (coordenadas y estrato) al stage limpio.
   # La primera corrida tarda: son cientos de requests a OpenStreetMap y ArcGIS. Todas
   # las respuestas quedan cacheadas en data/external/, así que la segunda es instantánea
   # y una corrida interrumpida retoma donde quedó.
@@ -50,15 +109,37 @@ services:
     <<: *etl
     command: python src/enrich.py
 
-  # Pipeline completo (extract -> transform -> enrich) en una sola invocación:
+  # Etapa 4 - Load:  docker compose run --rm load
+  # Sube las tres capas a MinIO y puebla ClickHouse leyendo el gold desde el lago.
+  # Idempotente: re-correr el mismo día sobrescribe la partición, no duplica filas.
+  load:
+    <<: *etl
+    environment:
+      <<: *lakehouse
+    depends_on:
+      minio:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    command: python src/load.py
+
+  # Pipeline completo (extract -> transform -> enrich -> load) en una sola invocación:
   #   docker compose run --rm pipeline
-  # El `&&` importa: si el extract falla no tiene sentido transformar datos viejos, y si
-  # el transform falla no hay stage limpio que enriquecer.
+  # El `&&` importa: cada etapa consume lo que dejó la anterior, y no tiene sentido
+  # seguir con datos viejos si una falla.
   pipeline:
     <<: *etl
+    environment:
+      <<: *lakehouse
+    depends_on:
+      minio:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - python src/extract.py --snapshot && python src/transform.py && python src/enrich.py
+      - python src/extract.py --snapshot && python src/transform.py
+        && python src/enrich.py && python src/load.py
 
   # Ejecución periódica del pipeline completo, con intervalo configurable:
   #   docker compose --profile periodico up -d pipeline-periodico
@@ -69,8 +150,14 @@ services:
     profiles: ["periodico"]
     restart: unless-stopped
     environment:
+      <<: *lakehouse
       HEADLESS: "true"
       INTERVALO_HORAS: "24"
+    depends_on:
+      minio:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -78,7 +165,11 @@ services:
           echo "[$$(date -u +%Y-%m-%dT%H:%M:%SZ)] iniciando pipeline"
           if python src/extract.py --snapshot; then
             if python src/transform.py; then
-              python src/enrich.py || echo "enriquecimiento fallido (exit $$?)"
+              if python src/enrich.py; then
+                python src/load.py || echo "carga fallida (exit $$?)"
+              else
+                echo "enriquecimiento fallido (exit $$?), se omite la carga"
+              fi
             else
               echo "transformacion fallida (exit $$?), se omite el enriquecimiento"
             fi
@@ -90,4 +181,5 @@ services:
         done
 
 volumes:
-  pgdata:
+  miniodata:
+  chdata:

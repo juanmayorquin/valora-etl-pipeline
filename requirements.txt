@@ -11,3 +11,8 @@ scipy==1.16.2
 # Ojo: con pyarrow instalado, pandas resuelve las regex de strings con RE2,
 # que NO soporta retroreferencias (\1). Ver PATRON_DIGITO_REPETIDO en transform.
 pyarrow==25.0.1
+
+# Etapa de carga (src/load.py): MinIO habla S3, así que el cliente es boto3;
+# clickhouse-connect entra por HTTP (8123), no por el protocolo nativo.
+boto3==1.35.76
+clickhouse-connect==0.8.11

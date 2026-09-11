@@ -73,7 +73,9 @@ quedan en tu disco, no dentro del contenedor.
 | `scraper` | `docker compose run --rm scraper` | Sólo etapa 1: scrapea a `data/raw/` | 3–4 h |
 | `transform` | `docker compose run --rm transform` | Sólo etapa 2: `data/raw/` → `data/processed/` | segundos |
 | `enrich` | `docker compose run --rm enrich` | Sólo etapa 3: agrega el contexto del barrio | 1–2 h la 1.ª vez, segundos después |
-| `db` | `docker compose up -d db` | Postgres 16, para la futura etapa de carga | — |
+| `load` | `docker compose run --rm load` | Sólo etapa 4: sube a MinIO y puebla ClickHouse | segundos |
+| `minio` | `docker compose up -d minio` | El lago. Consola en `localhost:9001` | — |
+| `clickhouse` | `docker compose up -d clickhouse` | El warehouse. HTTP en `localhost:8123` | — |
 | `pipeline-periodico` | ver abajo | El pipeline en bucle, cada N horas | permanente |
 
 ### Ejecución periódica
@@ -103,11 +105,41 @@ docker compose run --rm enrich                    # 15 ciudades (85 % de los anu
 docker compose run --rm enrich --ciudades 5       # más rápido, menos cobertura
 ```
 
-### La base de datos
+### El lakehouse
 
-`db` levanta un Postgres 16 en `localhost:5432` (usuario `gpa`, contraseña `gpa`, base
-`metrocuadrado`). **Hoy ningún código lo usa** — queda listo para la etapa de carga (Load),
-que todavía no existe.
+El reparto es deliberado: **MinIO es el lago y la fuente de verdad**, ClickHouse es el
+warehouse. La data queda en dos lugares a propósito — si mañana cambia el esquema, el lago
+tiene los Parquet originales y ClickHouse se reconstruye desde ahí; al revés no se puede.
+
+```
+MinIO       s3://valora/bronze/<tabla>/fecha=YYYY-MM-DD/datos.parquet   ← data/raw
+            s3://valora/silver/<tabla>/fecha=YYYY-MM-DD/datos.parquet   ← transform
+            s3://valora/gold/<tabla>/fecha=YYYY-MM-DD/datos.parquet     ← enrich
+
+ClickHouse  valora.anuncios   MergeTree, PARTITION BY fecha_carga
+                              ORDER BY (ciudad_clave, operacion, id_inmueble)
+```
+
+```bash
+docker compose up -d minio clickhouse    # levantar el lakehouse
+docker compose run --rm load             # cargar las tres capas
+```
+
+- **Consola de MinIO**: <http://localhost:9001> — usuario `valora`, contraseña `valora123`.
+- **ClickHouse por HTTP**: `curl 'http://localhost:8123/?user=valora&password=valora123' --data-binary 'SELECT count() FROM valora.anuncios'`
+- **Protocolo nativo**: puerto **9002**, no 9000. MinIO ya ocupa el 9000 en el host.
+
+**La carga es idempotente**: borra la partición del día antes de insertarla, así que
+re-correrla reemplaza en vez de duplicar. Es lo que permite encadenarla en el pipeline
+periódico sin que la tabla crezca sola.
+
+**Ojo con la zona horaria**: el contenedor corre en UTC y el host en hora local. La misma
+corrida a las 23:56 en Colombia escribe la partición de hoy desde el host y la de mañana
+desde Docker. No rompe nada, pero si querés que coincidan pasá `--fecha`.
+
+El gold que entra al warehouse son 36 de las 49 columnas: quedan afuera las banderas de
+calidad del transform, que en el stage limpio son todas `False` y sólo sirven para auditar
+la cuarentena.
 
 ---
 
@@ -275,7 +307,8 @@ llave, rangos, conservación de filas entre stages). Si alguna falla, sale con c
 - [x] Etapa 1 — Extract
 - [x] Etapa 2 — Transform
 - [x] Etapa 3 — Enrich (contexto geoespacial del barrio)
-- [ ] Etapa 4 — Load a un lakehouse con MinIO + ClickHouse
+- [x] Etapa 4 — Load a un lakehouse con MinIO + ClickHouse
+- [ ] Modelo de ML de precio (el stage gold ya está listo para alimentarlo)
 - [ ] Convertir las validaciones de `transform.py` en tests con pytest
 - [ ] Decidir si las vallas de outliers se congelan contra una línea base: hoy se
       recalculan en cada corrida, así que dos corridas pueden clasificar distinto la

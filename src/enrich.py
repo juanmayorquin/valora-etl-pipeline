@@ -202,7 +202,8 @@ def consultar_arcgis(base, parametros, directorio, nombre, pausa=PAUSA_ARCGIS_S)
 
 
 def bbox_ciudad(ciudad, directorio):
-    """Bounding box (sur, oeste, norte, este) de una ciudad, vía Nominatim.
+    """Devuelve (bbox, punto): el bounding box (sur, oeste, norte, este) y el PUNTO de
+    la ciudad según Nominatim.
 
     Se filtra por class/type porque Nominatim, con query libre, devuelve el primer
     resultado que matchee el TEXTO: para 'medellin, laureles' llega a devolver un salón
@@ -221,7 +222,7 @@ def bbox_ciudad(ciudad, directorio):
                   if x.get("class") in CLASES_CIUDAD and x.get("type") in TIPOS_CIUDAD
                   and x.get("boundingbox")]
     if not candidatos:
-        return None
+        return None, None
 
     def area_grados(item):
         sur, norte, oeste, este = (float(v) for v in item["boundingbox"])
@@ -252,8 +253,9 @@ def bbox_ciudad(ciudad, directorio):
     centro_lat, centro_lon = float(referencia["lat"]), float(referencia["lon"])
     lado = RADIO_MAX_CIUDAD_KM / 111.32
     lado_lon = lado / max(math.cos(math.radians(centro_lat)), 0.1)
-    return (max(sur, centro_lat - lado), max(oeste, centro_lon - lado_lon),
+    bbox = (max(sur, centro_lat - lado), max(oeste, centro_lon - lado_lon),
             min(norte, centro_lat + lado), min(este, centro_lon + lado_lon))
+    return bbox, (centro_lat, centro_lon)
 
 
 # --------------------------------------------------------------------------------------
@@ -271,6 +273,14 @@ FAMILIAS_GAZETTEER = {
     # más 92 localidades (nivel 8) y 139 UPZ (nivel 9).
     "administrativo": '["boundary"="administrative"]["admin_level"~"^(8|9|10)$"]',
 }
+
+# Cuando dos elementos comparten nombre, primero manda la fuente y recién después la
+# distancia. Un `place=neighbourhood` es la afirmación "acá hay un barrio llamado X"; un
+# `landuse=residential` es "este polígono de uso residencial se llama X", que en Colombia
+# suele ser una urbanización o un conjunto y es mucho menos confiable como barrio.
+# Sin esta prioridad, "el nogal" de Bogotá se resolvía contra un homónimo administrativo a
+# 15 km del barrio real.
+PRIORIDAD_FUENTE = {"place": 0, "administrativo": 1, "residencial": 2}
 
 # El anunciante escribe el barrio como se le canta. Indexar por todos los alias que OSM
 # conozca multiplica las chances de pegarle sin recurrir a un match difuso.
@@ -361,6 +371,7 @@ def descargar_familia(ciudad, bbox, familia, filtro, directorio):
             "alias": nombres_de(etiquetas),
             "lat_barrio": float(centro["lat"]),
             "lon_barrio": float(centro["lon"]),
+            "fuente": familia,
             "admin_level": etiquetas.get("admin_level"),
         })
     return filas, desde_cache, mosaicos
@@ -382,13 +393,16 @@ def construir_gazetteer(ciudades, directorio):
     """
     indice, cajas = {}, {}
     for ciudad in ciudades:
-        bbox = bbox_ciudad(ciudad, directorio)
+        bbox, punto = bbox_ciudad(ciudad, directorio)
         if bbox is None:
             log.warning("  %-22s sin bounding box en Nominatim: se omite", ciudad)
             continue
         cajas[ciudad] = bbox
-        sur, oeste, norte, este = bbox
-        centro_lat, centro_lon = (sur + norte) / 2, (oeste + este) / 2
+        # El ancla del desempate es el PUNTO de la ciudad, no el centro del bbox: ese
+        # centro es un artefacto del recorte y se corre hacia donde el municipio es más
+        # ancho, que suele ser zona rural. Para Bogotá la diferencia son 7 km, suficiente
+        # para que ganara un homónimo del sur.
+        centro_lat, centro_lon = punto
 
         for familia, filtro in FAMILIAS_GAZETTEER.items():
             filas, desde_cache, mosaicos = descargar_familia(
@@ -400,19 +414,20 @@ def construir_gazetteer(ciudades, directorio):
                 # features medían -0,010 en arriendo y -0,020 en venta en arranque en frío.
                 if fila["admin_level"] in ("8", "9"):
                     continue
-                # Desempate por cercanía al centro, no por orden de llegada. El bbox de
-                # una ciudad grande se mete en los municipios vecinos: el de Bogotá toca
-                # Soacha y Chía, que tienen barrios con los mismos nombres. Quedarse con
-                # el primero que apareciera hacía que un anuncio bogotano se llevara la
-                # coordenada de Soacha, la compuerta de municipio lo descartara, y la
-                # cobertura de Bogotá CAYERA de 40,5 % a 35,9 % al ampliar el bbox.
+                # Desempate por (fuente, distancia), no por orden de llegada. El bbox
+                # de una ciudad grande se mete en los municipios vecinos: el de Bogotá
+                # toca Soacha y Chía, que repiten nombres de barrio. Con el orden de
+                # llegada como criterio, Bogotá caía de 40,5 % a 35,9 % al ampliar el
+                # bbox, porque un anuncio bogotano se llevaba la coordenada de Soacha y
+                # la compuerta de municipio lo descartaba.
                 distancia = distancia_km(centro_lat, centro_lon,
                                          fila["lat_barrio"], fila["lon_barrio"])
+                rango = (PRIORIDAD_FUENTE.get(fila["fuente"], 9), distancia)
                 destino = (fila["lat_barrio"], fila["lon_barrio"],
-                           fila["barrio_osm"], distancia)
+                           fila["barrio_osm"], rango)
                 for alias in fila["alias"]:
                     previo = indice.get((ciudad, alias))
-                    if previo is None or distancia < previo[3]:
+                    if previo is None or rango < previo[3]:
                         indice[(ciudad, alias)] = destino
             log.info("  %-22s %-14s %5d elementos en %d mosaico(s) %s",
                      ciudad, familia, len(filas), mosaicos,
