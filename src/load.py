@@ -1,12 +1,16 @@
-"""Carga al lakehouse - cuarta etapa (Load) del flujo ETL.
+"""Carga al lakehouse - quinta etapa (Load) del flujo ETL.
 
 Sube las capas del pipeline a MinIO y puebla ClickHouse leyendo el gold desde el lago:
 
-    s3://<bucket>/bronze/<tabla>/fecha=YYYY-MM-DD/datos.parquet   <- data/raw
+    s3://<bucket>/bronze/<tabla>/fecha=YYYY-MM-DD/datos.parquet   <- data/raw (extract + detail)
     s3://<bucket>/silver/<tabla>/fecha=YYYY-MM-DD/datos.parquet   <- transform
     s3://<bucket>/gold/<tabla>/fecha=YYYY-MM-DD/datos.parquet     <- enrich
 
     ClickHouse  <db>.anuncios   MergeTree, PARTITION BY fecha_carga
+
+El esquema de la tabla EVOLUCIONA: si el gold trae columnas nuevas declaradas en
+ESQUEMA_GOLD, se agregan con ALTER TABLE en vez de recrear la tabla y perder las
+particiones anteriores.
 
 El reparto de responsabilidades es deliberado: **MinIO es el lago y la fuente de verdad**,
 ClickHouse es el warehouse. La data queda en dos lugares a propósito. Si mañana cambia el
@@ -54,6 +58,7 @@ FUENTES = {
     "bronze": {
         "anuncios_arriendo": ("raw", "anuncios_arriendo.csv"),
         "anuncios_venta": ("raw", "anuncios_venta.csv"),
+        "detalle": ("raw", "detalle.parquet"),
     },
     "silver": {
         "anuncios": ("processed", "anuncios.parquet"),
@@ -70,7 +75,27 @@ FUENTE_CLICKHOUSE = ("gold", "anuncios_enriquecido")
 # Esquema declarado del gold. El orden es el de las columnas en la tabla.
 # LowCardinality no es cosmético: sobre 45.000 filas con 3 valores distintos, la diferencia
 # de tamaño y de velocidad en los GROUP BY es de un orden de magnitud.
+# Quedan afuera las banderas BLOQUEANTES del transform (outlier_*, *_fuera_de_rango...):
+# en el stage limpio son todas False por construcción y sólo sirven para auditar la
+# cuarentena, que vive en el silver.
+# Las mismas banderas que define transform.COMODIDADES, en el mismo orden. Un test
+# (tests/test_consistencia.py) comprueba que las tres copias no se desincronicen.
+COMODIDADES = [
+    "tiene_ascensor", "tiene_piscina", "tiene_gimnasio", "tiene_conjunto_cerrado",
+    "tiene_vigilancia", "tiene_cctv", "tiene_citofono", "tiene_salon_comunal",
+    "tiene_zonas_verdes", "tiene_zona_ninos", "tiene_bbq", "tiene_canchas",
+    "tiene_sauna_turco", "tiene_jacuzzi", "tiene_parqueadero_visitantes",
+    "tiene_parqueadero_cubierto", "tiene_planta_electrica",
+    "tiene_balcon", "tiene_terraza", "tiene_chimenea", "tiene_deposito", "tiene_estudio",
+    "tiene_cocina_integral", "tiene_cuarto_servicio", "tiene_bano_servicio", "tiene_jardin",
+    "tiene_vista_exterior", "tiene_vista_panoramica", "tiene_aire_acondicionado",
+    "tiene_calefaccion", "tiene_walking_closet", "esta_amoblado", "es_monoambiente",
+    "acepta_mascotas",
+    "es_zona_rural", "cerca_transporte", "cerca_colegios", "cerca_parques",
+    "cerca_supermercados", "cerca_centros_comerciales",
+]
 ESQUEMA_GOLD = [
+    # Identidad y procedencia
     ("id_inmueble", "String", "str"),
     ("url", "String", "str"),
     ("texto", "String", "str"),
@@ -84,31 +109,70 @@ ESQUEMA_GOLD = [
     ("ciudad_clave", "LowCardinality(String)", "str"),
     ("sector", "String", "str"),
     ("sector_clave", "String", "str"),
+    # El inmueble
     ("area_m2", "Nullable(Float64)", "float"),
+    ("area_privada", "Nullable(Float64)", "float"),
     ("habitaciones", "Nullable(Int8)", "int8"),
     ("banos", "Nullable(Int8)", "int8"),
     ("parqueaderos", "Nullable(Int8)", "int8"),
+    # Las columnas que llegaron con el detalle van Nullable aunque el gold las traiga
+    # siempre: en las particiones cargadas ANTES de que existieran, un ALTER ADD COLUMN
+    # deja el default del tipo (false, ''), que se leería como dato. NULL dice la verdad.
+    ("estrato", "Nullable(UInt8)", "uint8"),
+    ("origen_estrato", "LowCardinality(Nullable(String))", "str_nulo"),
+    ("antiguedad", "LowCardinality(Nullable(String))", "str_nulo"),
+    ("antiguedad_ordinal", "Nullable(Int8)", "int8"),
+    ("estado_inmueble", "LowCardinality(Nullable(String))", "str_nulo"),
+    ("es_nuevo", "Nullable(Bool)", "bool_nulo"),
+    ("es_proyecto", "Nullable(Bool)", "bool_nulo"),
+    ("piso", "Nullable(Int16)", "int16"),
+    ("administracion", "Nullable(Int64)", "int64"),
+    ("comodidades", "Nullable(String)", "str_nulo"),
+    *[(columna, "Nullable(Bool)", "bool_nulo") for columna in COMODIDADES],
+    # El precio
     ("precio_venta", "Nullable(Int64)", "int64"),
     ("precio_arriendo", "Nullable(Int64)", "int64"),
     ("precio_m2", "Nullable(Float64)", "float"),
-    ("es_dual", "Bool", "bool"),
-    ("habitaciones_es_tope", "Bool", "bool"),
-    ("banos_es_tope", "Bool", "bool"),
-    ("parqueaderos_es_tope", "Bool", "bool"),
-    ("motivo_rechazo", "LowCardinality(String)", "str"),
-    ("n_motivos_rechazo", "Int32", "int32"),
-    # Lo que agrega el enrich. Todo nullable: el 59,8 % de las filas no matcheó con un
-    # barrio, y un nulo honesto es mejor que un cero que el modelo lee como dato.
+    ("precio_desde_detalle", "Nullable(Bool)", "bool_nulo"),
+    ("precio_discrepante", "Nullable(Bool)", "bool_nulo"),
+    # La ubicación: la coordenada final con su origen, y el respaldo OSM/Esri por detrás
+    ("lat", "Nullable(Float64)", "float"),
+    ("lon", "Nullable(Float64)", "float"),
+    ("origen_coordenada", "LowCardinality(Nullable(String))", "str_nulo"),
+    ("ubicacion_aproximada", "Nullable(Bool)", "bool_nulo"),
+    ("distancia_centro_km", "Nullable(Float64)", "float"),
+    ("barrio", "LowCardinality(Nullable(String))", "str_nulo"),
+    ("zona", "LowCardinality(Nullable(String))", "str_nulo"),
     ("barrio_osm", "LowCardinality(Nullable(String))", "str_nulo"),
     ("match_barrio", "LowCardinality(String)", "str"),
     ("match_verificado", "Nullable(Bool)", "bool_nulo"),
     ("lat_barrio", "Nullable(Float64)", "float"),
     ("lon_barrio", "Nullable(Float64)", "float"),
-    ("distancia_centro_km", "Nullable(Float64)", "float"),
     ("estrato_modal", "Nullable(UInt8)", "uint8"),
     ("estrato_promedio", "Nullable(Float64)", "float"),
     ("estrato_dispersion", "Nullable(Float64)", "float"),
     ("n_manzanas_estrato", "Nullable(UInt16)", "uint16"),
+    # El anuncio (describe la publicación, no el inmueble: no entra al modelo)
+    ("n_fotos", "Nullable(Int16)", "int16"),
+    ("tiene_video", "Nullable(Bool)", "bool_nulo"),
+    ("destacado", "Nullable(Bool)", "bool_nulo"),
+    ("inmobiliaria_id", "LowCardinality(Nullable(String))", "str_nulo"),
+    ("descripcion", "Nullable(String)", "str_nulo"),
+    ("con_detalle", "Nullable(Bool)", "bool_nulo"),
+    # Calidad: banderas informativas y trazabilidad
+    ("es_dual", "Bool", "bool"),
+    ("habitaciones_es_tope", "Bool", "bool"),
+    ("banos_es_tope", "Bool", "bool"),
+    ("parqueaderos_es_tope", "Bool", "bool"),
+    ("estrato_invalido", "Nullable(Bool)", "bool_nulo"),
+    ("coordenada_invalida", "Nullable(Bool)", "bool_nulo"),
+    ("coordenada_lejana", "Nullable(Bool)", "bool_nulo"),
+    ("area_privada_invalida", "Nullable(Bool)", "bool_nulo"),
+    ("administracion_invalida", "Nullable(Bool)", "bool_nulo"),
+    ("grupo_near_duplicado", "Nullable(Int32)", "int32_nulo"),
+    ("es_near_duplicado", "Nullable(Bool)", "bool_nulo"),
+    ("motivo_rechazo", "LowCardinality(String)", "str"),
+    ("n_motivos_rechazo", "Int32", "int32"),
 ]
 
 ORDEN_CLICKHOUSE = "(ciudad_clave, operacion, id_inmueble)"
@@ -157,7 +221,9 @@ def normalizar_tipos(df):
         "str_nulo": lambda s: s.astype("string"),
         "float": lambda s: pd.to_numeric(s, errors="coerce").astype("float64"),
         "int8": lambda s: pd.to_numeric(s, errors="coerce").astype("Int8"),
+        "int16": lambda s: pd.to_numeric(s, errors="coerce").astype("Int16"),
         "int32": lambda s: pd.to_numeric(s, errors="coerce").fillna(0).astype("int32"),
+        "int32_nulo": lambda s: pd.to_numeric(s, errors="coerce").astype("Int32"),
         "int64": lambda s: pd.to_numeric(s, errors="coerce").astype("Int64"),
         "uint8": lambda s: pd.to_numeric(s, errors="coerce").astype("UInt8"),
         "uint16": lambda s: pd.to_numeric(s, errors="coerce").astype("UInt16"),
@@ -263,8 +329,36 @@ def crear_tablas(cliente, config, recrear=False):
         PARTITION BY fecha_carga
         ORDER BY {ORDEN_CLICKHOUSE}
     """)
+    evolucionar_esquema(cliente, config, destino)
     log.info("  tabla %s lista (%d columnas + fecha_carga)", destino, len(ESQUEMA_GOLD))
     return destino
+
+
+def evolucionar_esquema(cliente, config, destino):
+    """Agrega a una tabla existente las columnas que el esquema declarado tiene y ella no.
+
+    Es lo que permite que el pipeline sume columnas (como pasó con el detalle) sin obligar
+    a un DROP. En las particiones cargadas antes del cambio la columna nueva queda en
+    NULL, que es exactamente lo que significa "ese dato no existía cuando se cargó"; por
+    eso las columnas nuevas se declaran Nullable aunque el gold las traiga siempre. Un
+    cambio de TIPO de una columna existente no se aplica solo: se avisa y se resuelve con
+    --recrear-tablas, porque puede perder datos.
+    """
+    existentes = dict(cliente.query(
+        "SELECT name, type FROM system.columns WHERE database = %(db)s AND table = %(tabla)s",
+        parameters={"db": config["ch_db"], "tabla": TABLA_CLICKHOUSE}).result_rows)
+    nuevas = [(nombre, tipo) for nombre, tipo, _ in ESQUEMA_GOLD if nombre not in existentes]
+    for nombre, tipo in nuevas:
+        cliente.command(f"ALTER TABLE {destino} ADD COLUMN IF NOT EXISTS {nombre} {tipo}")
+    if nuevas:
+        log.info("  esquema evolucionado: %d columnas nuevas (%s)", len(nuevas),
+                 ", ".join(nombre for nombre, _ in nuevas))
+    distintas = [(nombre, existentes[nombre], tipo) for nombre, tipo, _ in ESQUEMA_GOLD
+                 if nombre in existentes and existentes[nombre] != tipo]
+    for nombre, actual, declarado in distintas:
+        log.warning("  la columna %s es %s en la tabla y %s en el esquema: se deja como "
+                    "está (usá --recrear-tablas para aplicar el tipo nuevo)",
+                    nombre, actual, declarado)
 
 
 def poblar_desde_lago(cliente, config, destino, fecha):
