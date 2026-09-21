@@ -28,3 +28,11 @@ models/predicciones_oof.parquet
 
 # CatBoost escribe logs de entrenamiento en el cwd
 catboost_info/
+
+# Node / Frontend
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.pnpm-store/
+*.log

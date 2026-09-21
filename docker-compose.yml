@@ -45,7 +45,7 @@ services:
   # MergeTree para consultar rápido. La data queda en dos lugares a propósito: el lago
   # siempre se puede reprocesar.
   minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: quay.io/minio/minio:latest
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -65,7 +65,7 @@ services:
   # Contenedor efímero: crea el bucket y se apaga. `--ignore-existing` lo hace
   # idempotente, así que puede correr en cada `up`.
   minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: quay.io/minio/mc:latest
     depends_on:
       minio:
         condition: service_healthy
@@ -77,7 +77,7 @@ services:
         echo "bucket ${MINIO_BUCKET:-valora} listo"
 
   clickhouse:
-    image: clickhouse/clickhouse-server:24.8
+    image: clickhouse/clickhouse-server:latest
     restart: unless-stopped
     environment:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-valora}
@@ -233,6 +233,11 @@ services:
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./web:/app/web
+      - ./frontend:/app/frontend
     command: uvicorn web.app:app --host 0.0.0.0 --port 8000
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/ciudades', timeout=3)"]

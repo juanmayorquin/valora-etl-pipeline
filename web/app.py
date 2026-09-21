@@ -45,7 +45,17 @@ MINIMO_COMPARABLES = 8
 MAXIMO_COMPARABLES = 8
 GRADO_KM = 111.32
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="valora", docs_url="/api/docs", redoc_url=None)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 estado = {}
 
 
@@ -222,10 +232,17 @@ def valuar(inmueble: Inmueble):
 # La página
 # --------------------------------------------------------------------------------------
 
+FRONTEND_DIST = RAIZ / "frontend" / "dist"
+FRONTEND_ASSETS = FRONTEND_DIST / "assets"
+FRONTEND_ASSETS.mkdir(parents=True, exist_ok=True)
 ESTATICOS = Path(__file__).resolve().parent / "static"
+
+app.mount("/assets", StaticFiles(directory=FRONTEND_ASSETS), name="assets")
 app.mount("/static", StaticFiles(directory=ESTATICOS), name="static")
 
 
 @app.get("/")
 def pagina():
+    if FRONTEND_DIST.exists() and (FRONTEND_DIST / "index.html").exists():
+        return FileResponse(FRONTEND_DIST / "index.html")
     return FileResponse(ESTATICOS / "index.html")
