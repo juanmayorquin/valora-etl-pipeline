@@ -16,8 +16,11 @@ resuelta (3 km si hay pocos), con área parecida. No es parte del modelo: es la 
 un usuario querría ver al lado del número.
 """
 
+import asyncio
 import math
 import sys
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -56,32 +59,90 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-estado = {}
+estado = {
+    "modelo": None,
+    "modelo_cargando": False,
+    "modelo_error": None,
+    "gold": None,
+    "con_coordenada": None,
+    "arbol": None,
+    "nombres_sector": None,
+}
+_gold_lock = threading.Lock()
+_modelo_lock = threading.Lock()
 
 
 # --------------------------------------------------------------------------------------
-# Arranque: modelo, gold e índice espacial
+# Arranque: cargar solo el modelo; el gold se difiere hasta la primera valuación
 # --------------------------------------------------------------------------------------
 
 def cargar():
-    modelo = predict.cargar_modelo(RUTA_MODELO)
-    gold = pd.read_parquet(RUTA_GOLD, columns=[c for c in COLUMNAS_GOLD])
-    con_coordenada = gold[gold["lat"].notna()].reset_index(drop=True)
-    puntos = np.column_stack([
-        con_coordenada["lat"].astype("float64") * GRADO_KM,
-        con_coordenada["lon"].astype("float64") * GRADO_KM * math.cos(math.radians(4.6))])
-    nombres_sector = (gold.dropna(subset=["sector_clave"])
-                          .groupby(["ciudad_clave", "sector_clave"])["sector"]
-                          .agg(lambda s: s.mode().iloc[0]))
-    estado.update({"modelo": modelo, "gold": gold, "con_coordenada": con_coordenada,
-                   "arbol": cKDTree(puntos), "nombres_sector": nombres_sector})
+    if estado["modelo"] is not None or estado["modelo_cargando"]:
+        return
+    with _modelo_lock:
+        if estado["modelo"] is not None or estado["modelo_cargando"]:
+            return
+        estado["modelo_cargando"] = True
+    try:
+        estado["modelo"] = predict.cargar_modelo(RUTA_MODELO)
+        estado["modelo_error"] = None
+    except Exception as error:
+        estado["modelo_error"] = str(error)
+    finally:
+        estado["modelo_cargando"] = False
+
+
+def asegurar_gold():
+    """Carga el dataset y el índice solo cuando se necesitan comparables."""
+    if estado["gold"] is not None:
+        return
+    with _gold_lock:
+        if estado["gold"] is None:
+            gold = pd.read_parquet(RUTA_GOLD, columns=[c for c in COLUMNAS_GOLD])
+            con_coordenada = gold[gold["lat"].notna()].reset_index(drop=True)
+            puntos = np.column_stack([
+                con_coordenada["lat"].astype("float64") * GRADO_KM,
+                con_coordenada["lon"].astype("float64") * GRADO_KM * math.cos(math.radians(4.6))])
+            nombres_sector = (gold.dropna(subset=["sector_clave"])
+                              .groupby(["ciudad_clave", "sector_clave"])["sector"]
+                              .agg(lambda s: s.mode().iloc[0]))
+            estado.update({"gold": gold, "con_coordenada": con_coordenada,
+                           "arbol": cKDTree(puntos), "nombres_sector": nombres_sector})
 
 
 @app.on_event("startup")
 def al_arrancar():
     if not RUTA_MODELO.exists():
         raise RuntimeError(f"No existe {RUTA_MODELO}: correr `python src/train.py`")
-    cargar()
+    threading.Thread(target=cargar, name="valora-model-loader", daemon=True).start()
+
+
+@app.get("/api/health")
+def health():
+    if estado["modelo_error"]:
+        status = "error"
+    elif estado["modelo"] is None:
+        status = "loading"
+    else:
+        status = "ready"
+    return {
+        "status": status,
+        "model_loaded": estado["modelo"] is not None,
+        "gold_loaded": estado["gold"] is not None,
+        "error": estado["modelo_error"],
+    }
+
+
+def asegurar_modelo():
+    # Compatibilidad para clientes directos (incluidos tests): si la carga ya
+    # empezó en background, espera sin duplicar la lectura del artefacto.
+    while estado["modelo"] is None and estado["modelo_cargando"]:
+        time.sleep(0.05)
+    if estado["modelo"] is None:
+        detail = "El motor de valoración todavía está iniciando. Intenta nuevamente en unos segundos."
+        if estado["modelo_error"]:
+            detail = f"No se pudo cargar el modelo: {estado['modelo_error']}"
+        raise HTTPException(status_code=503, detail=detail)
 
 
 # --------------------------------------------------------------------------------------
@@ -90,6 +151,7 @@ def al_arrancar():
 
 @app.get("/api/ciudades")
 def ciudades():
+    asegurar_modelo()
     tabla = estado["modelo"]["ciudades"].sort_values("n", ascending=False)
     return [{"ciudad": fila.ciudad, "clave": fila.ciudad_clave, "anuncios": int(fila.n)}
             for fila in tabla.itertuples(index=False)]
@@ -97,6 +159,7 @@ def ciudades():
 
 @app.get("/api/sectores")
 def sectores(ciudad: str = Query(..., min_length=1), q: str = "", limite: int = 12):
+    asegurar_modelo()
     clave_ciudad = predict.clave(ciudad)
     tabla = estado["modelo"]["sectores"]
     tabla = tabla[tabla["ciudad_clave"] == clave_ciudad]
@@ -104,10 +167,11 @@ def sectores(ciudad: str = Query(..., min_length=1), q: str = "", limite: int = 
     if consulta:
         tabla = tabla[tabla["sector_clave"].str.contains(consulta, regex=False)]
     tabla = tabla.sort_values("n", ascending=False).head(limite)
-    nombres = estado["nombres_sector"]
+    nombres = estado.get("nombres_sector")
     salida = []
     for fila in tabla.itertuples(index=False):
-        nombre = nombres.get((fila.ciudad_clave, fila.sector_clave), fila.sector_clave.title())
+        nombre = (nombres.get((fila.ciudad_clave, fila.sector_clave), fila.sector_clave.title())
+                  if nombres is not None else fila.sector_clave.title())
         salida.append({"sector": nombre, "clave": fila.sector_clave, "anuncios": int(fila.n),
                        "estrato": None if math.isnan(fila.estrato) else int(fila.estrato)})
     return salida
@@ -212,20 +276,27 @@ def resumen_zona(cerca, area, resultado):
 
 
 @app.post("/api/valuar")
-def valuar(inmueble: Inmueble):
-    entrada = inmueble.model_dump()
-    try:
+async def valuar(inmueble: Inmueble):
+    """Ejecuta la predicción y búsqueda de comparables en un hilo aparte para
+    no bloquear el event loop de uvicorn (la predicción es CPU-bound y tarda ~3-7 s)."""
+    def _calcular():
+        asegurar_modelo()
+        asegurar_gold()
+        entrada = inmueble.model_dump()
         resultado = predict.predecir(estado["modelo"], entrada)
+        lat, lon = resultado["contexto"]["coordenada_usada"]
+        cerca, radio = buscar_comparables(lat, lon, inmueble.tipo, inmueble.area_m2,
+                                          predict.clave(inmueble.sector), predict.clave(inmueble.ciudad))
+        return {
+            "avaluo": resultado,
+            "zona": {"radio_km": radio, "centro": {"lat": lat, "lon": lon},
+                     **resumen_zona(cerca, inmueble.area_m2, resultado)},
+        }
+    try:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _calcular)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    lat, lon = resultado["contexto"]["coordenada_usada"]
-    cerca, radio = buscar_comparables(lat, lon, inmueble.tipo, inmueble.area_m2,
-                                      predict.clave(inmueble.sector), predict.clave(inmueble.ciudad))
-    return {
-        "avaluo": resultado,
-        "zona": {"radio_km": radio, "centro": {"lat": lat, "lon": lon},
-                 **resumen_zona(cerca, inmueble.area_m2, resultado)},
-    }
 
 
 # --------------------------------------------------------------------------------------
@@ -241,8 +312,13 @@ app.mount("/assets", StaticFiles(directory=FRONTEND_ASSETS), name="assets")
 app.mount("/static", StaticFiles(directory=ESTATICOS), name="static")
 
 
-@app.get("/")
-def pagina():
+@app.get("/{filename:path}")
+def pagina(filename: str = ""):
+    """Sirve el SPA: archivos estáticos del build y fallback a index.html."""
+    # Intentar servir el archivo desde frontend/dist (logos, favicon, etc.)
+    if filename and (FRONTEND_DIST / filename).is_file():
+        return FileResponse(FRONTEND_DIST / filename)
+    # Fallback: index.html del SPA
     if FRONTEND_DIST.exists() and (FRONTEND_DIST / "index.html").exists():
         return FileResponse(FRONTEND_DIST / "index.html")
     return FileResponse(ESTATICOS / "index.html")

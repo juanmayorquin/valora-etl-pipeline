@@ -1,18 +1,18 @@
 /* valora · hoja de estilos. Sin framework: variables, grilla y unas pocas animaciones. */
 
 :root {
-  --papel: #f5f1e8;
-  --papel-2: #ece6d8;
-  --tinta: #17150f;
-  --tinta-2: #4b463c;
-  --tinta-3: #8a8272;
-  --linea: #d8d0bf;
-  --venta: #b1502a;
-  --venta-suave: rgba(177, 80, 42, 0.12);
-  --arriendo: #2e5d4f;
-  --arriendo-suave: rgba(46, 93, 79, 0.12);
-  --acento: #1e3a5f;
-  --sombra: 0 18px 50px -30px rgba(23, 21, 15, 0.45);
+  --papel: #f4f6fa;
+  --papel-2: #ffffff;
+  --tinta: #0a1646; /* Azul marino oficial */
+  --tinta-2: #1e2d63;
+  --tinta-3: #52638f;
+  --linea: #d4dcf0;
+  --venta: #183a99;
+  --venta-suave: rgba(24, 58, 153, 0.12);
+  --arriendo: #236e44; /* Verde bosque oficial */
+  --arriendo-suave: rgba(35, 110, 68, 0.12);
+  --acento: #236e44;
+  --sombra: 0 18px 50px -30px rgba(10, 22, 70, 0.25);
   --radio: 14px;
   --fuente-texto: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --fuente-display: "Fraunces", Georgia, "Times New Roman", serif;
@@ -20,17 +20,17 @@
 }
 
 [data-tema="oscuro"] {
-  --papel: #15140f;
-  --papel-2: #1e1c15;
-  --tinta: #efe9db;
-  --tinta-2: #b8b09d;
-  --tinta-3: #7e786a;
-  --linea: #302d24;
-  --venta: #e07a4f;
-  --venta-suave: rgba(224, 122, 79, 0.16);
-  --arriendo: #6fb59c;
-  --arriendo-suave: rgba(111, 181, 156, 0.16);
-  --acento: #8fb3dd;
+  --papel: #060d26; /* Fondo azul marino profundo */
+  --papel-2: #09153a; /* Card azul marino */
+  --tinta: #f8fafc;
+  --tinta-2: #cbd5e1;
+  --tinta-3: #7c8db5;
+  --linea: #142553;
+  --venta: #6d95e7;
+  --venta-suave: rgba(109, 149, 231, 0.16);
+  --arriendo: #34d399; /* Verde esmeralda vibrante */
+  --arriendo-suave: rgba(52, 211, 153, 0.16);
+  --acento: #34d399;
   --sombra: 0 18px 50px -30px rgba(0, 0, 0, 0.8);
   color-scheme: dark;
 }
@@ -52,8 +52,8 @@ body::before {
   content: "";
   position: fixed; inset: 0; pointer-events: none; z-index: 0;
   background:
-    radial-gradient(1200px 600px at 85% -10%, rgba(177, 80, 42, 0.07), transparent 60%),
-    radial-gradient(900px 500px at -10% 110%, rgba(46, 93, 79, 0.08), transparent 60%);
+    radial-gradient(1200px 600px at 85% -10%, rgba(35, 110, 68, 0.1), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(10, 22, 70, 0.15), transparent 60%);
 }
 h1, h2, h3 { font-family: var(--fuente-display); font-weight: 400; margin: 0; letter-spacing: -0.01em; }
 button, input, select { font: inherit; color: inherit; }
@@ -63,14 +63,26 @@ a { color: inherit; }
 /* ── barra ───────────────────────────────────────────────────────────────── */
 .barra {
   position: relative; z-index: 1;
-  display: flex; align-items: baseline; gap: 20px;
+  display: flex; align-items: center; gap: 20px;
   padding: 22px clamp(18px, 4vw, 48px) 0;
 }
+.marca-logo {
+  display: inline-flex; align-items: center;
+  text-decoration: none;
+}
+.marca-logo img {
+  height: 38px; width: auto; object-fit: contain;
+}
+.logo-img--dark { display: none; }
+.logo-img--light { display: block; }
+[data-tema="oscuro"] .logo-img--dark { display: block; }
+[data-tema="oscuro"] .logo-img--light { display: none; }
+
 .marca {
   font-family: var(--fuente-display); font-size: 26px; font-weight: 600; letter-spacing: -0.03em;
   text-decoration: none;
 }
-.marca__punto { color: var(--venta); }
+.marca__punto { color: var(--arriendo); }
 .barra__nota { margin: 0; color: var(--tinta-3); font-size: 13px; flex: 1; }
 .tema {
   width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--linea); background: transparent;

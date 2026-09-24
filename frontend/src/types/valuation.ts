@@ -1,5 +1,7 @@
 export type PropertyType = 'apartamento' | 'casa' | 'apartaestudio';
 export type OperationType = 'venta' | 'arriendo';
+export type UserObjective = 'vender' | 'arrendar' | 'ambas';
+export type ConfidenceLevel = 'alta' | 'media' | 'limitada';
 
 export interface CiudadCatalogItem {
   ciudad: string;
@@ -48,35 +50,35 @@ export interface ComparableItem {
 export interface HistogramaM2 {
   limites: number[];
   conteos: number[];
-  barra_avaluo: number;
+  barra_avaluo: number | null;
 }
 
 export interface OperacionZona {
   n_zona: number;
   n_parecidos: number;
-  mediana_m2: number;
-  p25_m2: number;
-  p75_m2: number;
-  mediana_precio_parecidos: number;
-  percentil_avaluo: number;
-  histograma_m2: HistogramaM2;
+  mediana_m2: number | null;
+  p25_m2: number | null;
+  p75_m2: number | null;
+  mediana_precio_parecidos: number | null;
+  percentil_avaluo: number | null;
+  histograma_m2: HistogramaM2 | null;
   comparables: ComparableItem[];
 }
 
 export interface OperacionEstimado {
   estimado: number;
   rango: [number, number];
-  precio_m2: number;
+  precio_m2: number | null;
 }
 
 export interface ContextoEstimado {
   ciudad: string;
-  sector: string;
+  sector: string | null;
   sector_conocido: boolean;
   n_comparables_sector: number;
   origen_coordenada: string;
   origen_estrato: string;
-  estrato_usado: number;
+  estrato_usado: number | null;
   coordenada_usada: [number, number];
   distancia_centro_km: number;
 }
@@ -86,12 +88,26 @@ export interface ValuationResponse {
     contexto: ContextoEstimado;
     arriendo: OperacionEstimado;
     venta: OperacionEstimado;
-    "rentabilidad_bruta_anual_%": number;
+    "rentabilidad_bruta_anual_%"?: number;
   };
   zona: {
-    radio_km: number;
+    radio_km: number | null;
     centro: { lat: number; lon: number };
     venta?: OperacionZona;
     arriendo?: OperacionZona;
+  };
+}
+
+export interface ConfidenceDetails {
+  level: ConfidenceLevel;
+  title: string;
+  explanation: string;
+  reasons: string[];
+  metrics: {
+    comparablesDirectos: number;
+    radioAnalisisKm: number | null;
+    origenCoords: string;
+    origenEstrato: string;
+    amplitudRangoPct: number;
   };
 }

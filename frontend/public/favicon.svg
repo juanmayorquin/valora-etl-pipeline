@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Rounded background badge for clean favicon visibility -->
+  <rect width="64" height="64" rx="14" fill="#FFFFFF"/>
+  <rect width="64" height="64" rx="14" stroke="#E2E8F0" stroke-width="1.5"/>
+  <!-- Isotype inside -->
+  <g transform="translate(4, 4) scale(0.56)">
+    <path d="M 20 74 A 38 38 0 0 1 80 74" stroke="#176B45" stroke-width="10" stroke-linecap="round" fill="none" />
+    <rect x="58" y="36" width="6.5" height="14" fill="#176B45" rx="1.5" />
+    <path d="M 27 62 L 50 42 L 73 62" stroke="#176B45" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+    <path d="M 37 62 L 37 77 L 63 77 L 63 62 Z" fill="#176B45" />
+    <rect x="43" y="64" width="5" height="5" fill="#FFFFFF" rx="0.6" />
+    <rect x="51.5" y="64" width="5" height="5" fill="#FFFFFF" rx="0.6" />
+    <rect x="43" y="70.5" width="5" height="5" fill="#FFFFFF" rx="0.6" />
+    <rect x="51.5" y="70.5" width="5" height="5" fill="#FFFFFF" rx="0.6" />
+  </g>
+</svg>

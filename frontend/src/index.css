@@ -3,33 +3,65 @@
 @tailwind utilities;
 
 @layer base {
+  html {
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
   body {
-    @apply bg-slate-950 text-slate-100;
+    background-color: #F5F7F4;
+    color: #142B3A;
+    font-size: 16px;
+    line-height: 1.6;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+    color: #142B3A;
   }
 }
 
-/* Custom modern scrollbars */
+/* Custom subtle scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: #F5F7F4;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.2);
+  background: #CBD5DC;
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.4);
+  background: #8E9CA3;
 }
 
-/* Leaflet map styles for dark mode */
+/* Leaflet map styles */
 .leaflet-container {
   font-family: inherit;
-  border-radius: 0.75rem;
+  border-radius: 1rem;
   z-index: 10;
+  border: 1px solid #E3E8EC;
+  background-color: #F5F7F4;
 }
-.dark .leaflet-tile-pane {
-  filter: brightness(0.85) invert(1) contrast(3) hue-rotate(200deg) saturate(0.3) brightness(0.7);
+.leaflet-tile-pane {
+  filter: none;
+}
+.leaflet-popup-content-wrapper {
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 25px -5px rgba(20, 43, 58, 0.15);
+  font-family: inherit;
+  color: #142B3A;
+  font-size: 14px;
+}
+.leaflet-popup-tip {
+  background: #FFFFFF;
+}
+
+/* Numerical tabular numbers utility */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
